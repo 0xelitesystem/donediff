@@ -9,7 +9,7 @@ description = "Audit what your coding agent claimed against what it actually did
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "Salman Ahsan (RBL)" }]
+authors = [{ name = "RBL Industries" }]
 keywords = ["ai-agents", "claude-code", "verification", "trust", "audit", "llm"]
 classifiers = [
   "Development Status :: 4 - Beta",
