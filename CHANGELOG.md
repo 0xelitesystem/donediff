@@ -54,6 +54,12 @@ donediff now reads the project's git state.
 
 - The `receipts` command, deprecated in 0.3.0. Use `donediff`.
 
+### Security
+
+- Hostile repositories are refused before git reads them: a filter that cannot be
+  turned off (a filter name holding `=`), and a config, included config,
+  worktree config or alternates chain that points at a network or device path.
+
 ## 0.3.0
 
 The tool is now called donediff (formerly agent-receipts).
