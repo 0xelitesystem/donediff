@@ -157,6 +157,7 @@ def _finding_dict(finding: Finding) -> dict:
     return {
         "type": finding.claim.type.value,
         "quote": finding.claim.quote,
+        "sentence": finding.claim.sentence or finding.claim.quote,
         "detail": finding.claim.detail,
         "verdict": finding.verdict.value,
         "evidence": finding.evidence,

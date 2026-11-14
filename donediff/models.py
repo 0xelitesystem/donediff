@@ -47,6 +47,7 @@ class Event:
     source: "Source | None" = None  # None means the main session
     failure_hint: bool = False  # output reported failures (kept when output is dropped)
     pass_hint: bool = False  # output shows a positive pass marker (kept likewise)
+    passed_counts: frozenset = frozenset()  # passing-test totals the output shows (kept likewise)
     # A command that went to the background: its first result only says it
     # started. It counts once its completion notice is seen, with the exit
     # code and time from that notice; until then it is no evidence.
@@ -152,6 +153,11 @@ class ClaimType(enum.Enum):
     COMMIT_MADE = "commit_made"
     PUSHED = "pushed"
     TASK_DONE = "task_done"
+    FILE_EDITED = "file_edited"
+    DEPLOYED = "deployed"
+    TEST_COUNT = "test_count"
+    COMMIT_ID = "commit_id"
+    PATH_WRITTEN = "path_written"
 
 
 @dataclass
@@ -159,9 +165,12 @@ class Claim:
     """A checkable assertion the agent made in its prose."""
 
     type: ClaimType
-    quote: str  # the sentence the claim came from, trimmed
+    quote: str  # what the finding shows: the sentence, or the matched phrase
     event_index: int  # index of the text event containing it
-    detail: str = ""  # e.g. the file path for FILE_CREATED
+    # FILE_CREATED / FILE_EDITED / PATH_WRITTEN: the path; COMMIT_ID: the id;
+    # TEST_COUNT: the claimed number of passing tests.
+    detail: str = ""
+    sentence: str = ""  # the whole sentence, when it holds more than one claim
 
 
 class Verdict(enum.Enum):

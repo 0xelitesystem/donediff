@@ -32,7 +32,7 @@ import os
 import re
 from pathlib import Path
 
-from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types
+from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from .models import Delivery, Event, EventKind, Session
 
 _EXIT_CODE_RE = re.compile(r"[Ee]xit code:? (\d+)")
@@ -108,6 +108,7 @@ def complete_background(event: Event, code: int, when: float, timestamp: str) ->
     event.is_error = code != 0
     event.failure_hint = False
     event.pass_hint = False  # the output is in a file the transcript does not hold
+    event.passed_counts = frozenset()
     event.t = when
     event.timestamp = timestamp
 
@@ -280,6 +281,8 @@ def parse_transcript(path: str | Path) -> Session:
                     exit_code_of(event)
                     event.failure_hint = bool(FAILURE_IN_OUTPUT.search(event.output))
                     event.pass_hint = bool(PASS_IN_OUTPUT.search(event.output))
+                    if event.check_types:
+                        event.passed_counts = passed_counts(event.output)
                     if event.tool_name in _SHELL_TOOLS:
                         bid = background_id(tool_use_result, event.output)
                         if bid is not None:

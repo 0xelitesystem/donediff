@@ -262,6 +262,17 @@ _DRIVE_MSYS = re.compile(r"^/([A-Za-z])(?=/|$)")
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
 
+def is_remote_path(path) -> bool:
+    """UNC, device or NT-namespace path (\\\\host\\share, //host/share, \\??\\...).
+
+    Paths come from the transcript, so they are untrusted. On Windows,
+    stat-ing \\\\host\\share opens an SMB connection to that host and sends
+    the user's NTLM credentials, so these are never touched.
+    """
+    text = str(path).replace("/", "\\")
+    return text.startswith("\\\\") or text.startswith("\\??\\")
+
+
 def norm_path(path: str, base: str | None = None) -> str | None:
     """A comparable form of a path: forward slashes, lowercase, no dot parts.
 

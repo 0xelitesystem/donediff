@@ -1,0 +1,485 @@
+"""Git state checks (0.4.0): committed, pushed, files in the diff, commit ids,
+the fallback when git cannot be read, and a repository built to attack us."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
+from donediff import gitstate
+from donediff.claims import extract_claims
+from donediff.cli import main
+from donediff.models import ClaimType, Verdict
+from donediff.parser import parse_transcript
+from donediff.verify import verify_claims
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+
+IN_SESSION = "2026-06-10T12:00:00Z"  # the conftest records' time
+BEFORE = "2026-06-01T09:00:00Z"
+
+
+def git(repo: Path, *args: str, date: str = IN_SESSION) -> str:
+    """Set up a test repository (never used by the code under test)."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+               GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid",
+               GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date,
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    done = subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True, text=True, env=env)
+    return done.stdout.strip()
+
+
+def make_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "commit.gpgsign", "false")
+    (repo / "README.md").write_text("start\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-q", "-m", "Initial", date=BEFORE)
+    return repo
+
+
+def commit_file(repo: Path, rel: str, message: str, date: str = IN_SESSION) -> str:
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(message + "\n", encoding="utf-8")
+    git(repo, "add", rel)
+    git(repo, "commit", "-q", "-m", message, date=date)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def audit(tmp_path: Path, repo: Path, records: list[dict], check_disk: bool = True):
+    for record in records:
+        if record.get("type") == "assistant":
+            record["cwd"] = str(repo)
+    session = parse_transcript(write_jsonl(tmp_path / "s.jsonl", records))
+    return verify_claims(session, extract_claims(session), check_disk=check_disk)
+
+
+def one(findings, claim_type):
+    found = [f for f in findings if f.claim.type is claim_type]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def commit_records(message: str, printed: str = "[main 1234abc] x") -> list[dict]:
+    return [assistant_tool("c1", "Bash", {"command": f"git commit -m '{message}'"}),
+            tool_result("c1", printed)]
+
+
+# -- committed ---------------------------------------------------------------
+
+@needs_git
+def test_commit_made_in_the_session_verifies(tmp_path):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.VERIFIED
+    assert finding.evidence.endswith("[in git]") and "Add cache" in finding.evidence
+
+
+@needs_git
+def test_no_commit_in_the_session_contradicts_a_printed_commit(tmp_path):
+    repo = make_repo(tmp_path)  # only the commit from before the session
+    finding = one(audit(tmp_path, repo, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.CONTRADICTED
+    assert "no commit was made in this repository during the session" in finding.evidence
+
+
+@needs_git
+def test_commit_with_another_subject_contradicts(tmp_path):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "src/other.py", "Something else")
+    finding = one(audit(tmp_path, repo, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.CONTRADICTED
+    assert "Add cache" in finding.evidence
+
+
+# -- pushed (local refs only) ------------------------------------------------
+
+@needs_git
+def test_pushed_commit_on_a_remote_tracking_branch_verifies(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/cache.py", "Add cache")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    finding = one(audit(tmp_path, repo, commit_records("Add cache") + [
+        assistant_tool("p1", "Bash", {"command": "git push origin main"}),
+        tool_result("p1", "main -> main"),
+        assistant_text("Pushed the branch to origin."),
+    ]), ClaimType.PUSHED)
+    assert finding.verdict is Verdict.VERIFIED
+    assert "origin/main" in finding.evidence and "not fetched" in finding.evidence
+
+
+@needs_git
+def test_session_commit_on_no_remote_branch_contradicts(tmp_path):
+    repo = make_repo(tmp_path)
+    old = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-ref", "refs/remotes/origin/main", old)
+    commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, commit_records("Add cache") + [
+        assistant_tool("p1", "Bash", {"command": "git push origin main"}),
+        tool_result("p1", "main -> main"),
+        assistant_text("Pushed the branch to origin."),
+    ]), ClaimType.PUSHED)
+    assert finding.verdict is Verdict.CONTRADICTED
+    assert "no remote-tracking branch" in finding.evidence
+
+
+@needs_git
+def test_pushed_without_remote_tracking_branches_is_not_checked(tmp_path):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, commit_records("Add cache") + [
+        assistant_tool("p1", "Bash", {"command": "git push origin main"}),
+        tool_result("p1", "main -> main"),
+        assistant_text("Pushed the branch to origin."),
+    ]), ClaimType.PUSHED)
+    assert finding.verdict is Verdict.VERIFIED  # the transcript's own verdict
+    assert "git state not checked (the repository has no remote-tracking branches)" \
+        in finding.evidence
+
+
+# -- files named in claims ---------------------------------------------------
+
+def write_records(repo: Path, rel: str) -> list[dict]:
+    return [assistant_tool("w1", "Write", {"file_path": str(repo / rel), "content": "x"}),
+            tool_result("w1", "ok")]
+
+
+@needs_git
+def test_created_file_in_a_session_commit_verifies(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, write_records(repo, "src/cache.py")
+                        + [assistant_text("I created `src/cache.py`.")]),
+                  ClaimType.FILE_CREATED)
+    assert finding.verdict is Verdict.VERIFIED
+    assert f"in session commit {sha[:7]}" in finding.evidence
+
+
+@needs_git
+def test_bare_file_name_matches_the_committed_path(tmp_path):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, [assistant_text("I created `cache.py`.")]),
+                  ClaimType.FILE_CREATED)
+    assert finding.verdict is Verdict.VERIFIED  # raised from UNVERIFIED by the commit
+    assert "is in session commit" in finding.evidence
+
+
+@needs_git
+def test_edited_file_with_working_tree_change_verifies(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "README.md").write_text("changed\n", encoding="utf-8")
+    finding = one(audit(tmp_path, repo, write_records(repo, "README.md")
+                        + [assistant_text("Updated `README.md` with the new flags.")]),
+                  ClaimType.FILE_EDITED)
+    assert finding.verdict is Verdict.VERIFIED
+    assert "in the working-tree changes" in finding.evidence
+
+
+@needs_git
+def test_file_the_diff_does_not_touch_contradicts(tmp_path):
+    repo = make_repo(tmp_path)  # README.md committed before the session, unchanged
+    finding = one(audit(tmp_path, repo, write_records(repo, "README.md")
+                        + [assistant_text("Updated `README.md` with the new flags.")]),
+                  ClaimType.FILE_EDITED)
+    assert finding.verdict is Verdict.CONTRADICTED
+    assert "names a file the diff does not touch" in finding.evidence
+
+
+@needs_git
+def test_ignored_file_is_not_judged_by_git(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("out/\n", encoding="utf-8")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-q", "-m", "Ignore out", date=BEFORE)
+    (repo / "out").mkdir()
+    (repo / "out" / "build.log").write_text("x", encoding="utf-8")
+    finding = one(audit(tmp_path, repo, write_records(repo, "out/build.log")
+                        + [assistant_text("I created `out/build.log`.")]),
+                  ClaimType.FILE_CREATED)
+    assert finding.verdict is Verdict.VERIFIED
+    assert "git state not checked (git ignores this path)" in finding.evidence
+
+
+@needs_git
+def test_path_outside_the_project_is_never_looked_up(tmp_path):
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+    finding = one(audit(tmp_path, repo, [
+        assistant_tool("w1", "Write", {"file_path": str(outside), "content": "x"}),
+        tool_result("w1", "ok"),
+        assistant_text("I created `../outside.txt`."),
+    ]), ClaimType.FILE_CREATED)
+    assert finding.verdict is Verdict.VERIFIED  # the transcript's own verdict
+    assert "git state not checked (path is outside the project)" in finding.evidence
+
+
+def test_relative_refuses_escapes(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    view = gitstate.GitRepo.__new__(gitstate.GitRepo)
+    view.project = str(repo.resolve())
+    view.toplevel = view.project
+    assert view.relative("src/a.py") == "src/a.py"
+    assert view.relative("../outside.txt") is None
+    assert view.relative(str(tmp_path / "other" / "a.py")) is None
+    assert view.relative("\\\\host\\share\\a.py") is None
+    assert view.relative("//host/share/a.py") is None
+
+
+# -- commit ids ----------------------------------------------------------------
+
+@needs_git
+def test_commit_id_in_the_repository_verifies(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/cache.py", "Add cache")
+    finding = one(audit(tmp_path, repo, [assistant_text(f"Committed as `{sha[:8]}`.")]),
+                  ClaimType.COMMIT_ID)
+    assert finding.verdict is Verdict.VERIFIED and finding.evidence.endswith("[in git]")
+
+
+@needs_git
+def test_commit_id_not_in_the_repository_contradicts(tmp_path):
+    repo = make_repo(tmp_path)
+    finding = one(audit(tmp_path, repo, [assistant_text("Committed as `0badc0de1`.")]),
+                  ClaimType.COMMIT_ID)
+    assert finding.verdict is Verdict.CONTRADICTED
+    assert "is not in this repository" in finding.evidence
+
+
+# -- git not available: keep the transcript verdict and say why -------------
+
+def test_not_a_repository_keeps_the_transcript_verdict(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    finding = one(audit(tmp_path, plain, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.VERIFIED
+    assert finding.evidence.endswith("git state not checked (not a git work tree)")
+
+
+def test_git_missing_keeps_the_transcript_verdict(tmp_path, monkeypatch):
+    monkeypatch.setattr(gitstate.shutil, "which", lambda name: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    finding = one(audit(tmp_path, plain, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.VERIFIED
+    assert "git state not checked (git not found)" in finding.evidence
+
+
+def test_missing_project_directory_is_not_checked(tmp_path):
+    finding = one(audit(tmp_path, tmp_path / "gone", commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert "git state not checked (project directory not found)" in finding.evidence
+
+
+def test_network_project_path_is_never_touched(tmp_path, monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("git started for a network path")
+    monkeypatch.setattr(gitstate.subprocess, "Popen", refuse)
+    session = parse_transcript(write_jsonl(tmp_path / "s.jsonl", [
+        dict(assistant_text("I committed the changes."), cwd="\\\\host\\share\\proj")]))
+    finding, = verify_claims(session, extract_claims(session), check_disk=True)
+    assert "git state not checked (network or device path)" in finding.evidence
+
+
+def _refuse_popen(monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("git started for a repository that points at the network")
+    monkeypatch.setattr(gitstate.subprocess, "Popen", refuse)
+
+
+@pytest.mark.parametrize("setup", ["gitfile", "alternates", "config_include", "commondir"])
+def test_repository_pointing_at_a_network_path_is_never_run(tmp_path, monkeypatch, setup):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    if setup == "gitfile":
+        (proj / ".git").write_text("gitdir: //host.invalid/share/repo.git\n", encoding="utf-8")
+    else:
+        dotgit = proj / ".git"
+        (dotgit / "objects" / "info").mkdir(parents=True)
+        if setup == "alternates":
+            (dotgit / "objects" / "info" / "alternates").write_text(
+                "\\\\host.invalid\\share\\objects\n", encoding="utf-8")
+        elif setup == "config_include":
+            (dotgit / "config").write_text(
+                "[include]\n\tpath = //host.invalid/share/evil.cfg\n", encoding="utf-8")
+        else:
+            (dotgit / "commondir").write_text("//host.invalid/share/common\n", encoding="utf-8")
+    _refuse_popen(monkeypatch)
+    finding = one(audit(tmp_path, proj, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.VERIFIED  # the transcript's own verdict
+    assert "git state not checked (" in finding.evidence
+    assert "network or device path)" in finding.evidence
+
+
+def test_no_disk_check_never_starts_git(tmp_path, monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("git started with --no-disk-check")
+    monkeypatch.setattr(gitstate.subprocess, "Popen", refuse)
+    finding = one(audit(tmp_path, tmp_path, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")], check_disk=False),
+                  ClaimType.COMMIT_MADE)
+    assert "git state" not in finding.evidence
+
+
+@needs_git
+def test_git_output_over_the_cap_falls_back(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "src/cache.py", "Add cache")
+    monkeypatch.setattr(gitstate, "OUTPUT_CAP", 4)
+    finding = one(audit(tmp_path, repo, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert finding.verdict is Verdict.VERIFIED
+    assert "git state not checked (git output too large)" in finding.evidence
+
+
+@needs_git
+def test_git_timeout_falls_back(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(gitstate, "TIMEOUT", 0.000001)
+    finding = one(audit(tmp_path, repo, commit_records("Add cache")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert "git state not checked (git timed out)" in finding.evidence
+
+
+# -- how git is run -------------------------------------------------------------
+
+_READ_ONLY = {"rev-parse", "config", "log", "show", "status", "branch", "cat-file"}
+
+
+@needs_git
+def test_every_git_call_is_hardened_and_read_only(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/cache.py", "Add cache")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    calls = []
+    real = subprocess.Popen
+
+    def spy(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(gitstate.subprocess, "Popen", spy)
+    audit(tmp_path, repo, commit_records("Add cache") + write_records(repo, "src/cache.py") + [
+        assistant_tool("p1", "Bash", {"command": "git push"}), tool_result("p1", "ok"),
+        assistant_text("I created `src/cache.py`."),
+        assistant_text("I committed the changes."),
+        assistant_text("Pushed the branch to origin."),
+        assistant_text(f"Committed as `{sha[:8]}`."),
+    ])
+    assert calls
+    for argv, kwargs in calls:
+        assert isinstance(argv, list) and kwargs.get("shell") is False
+        assert argv[1:4] == ["-C", str(repo.resolve()), "--no-pager"]
+        assert "core.fsmonitor=false" in argv and "diff.external=" in argv
+        assert "protocol.allow=never" in argv and "log.showSignature=false" in argv
+        assert any(a.startswith("core.hooksPath=") for a in argv)
+        command = next(a for a in argv[4:] if not a.startswith("-") and "=" not in a)
+        assert command in _READ_ONLY, argv
+        if command == "show":
+            assert "--no-ext-diff" in argv and "--no-textconv" in argv
+        env = kwargs["env"]
+        assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_OPTIONAL_LOCKS"] == "0"
+        assert kwargs["stdin"] is subprocess.DEVNULL
+
+
+# -- a repository written to run code when read ----------------------------
+
+def _evil_script(tmp_path: Path, marker: Path) -> Path:
+    script = tmp_path / "evil.sh"
+    script.write_text(f"#!/bin/sh\necho hit >> '{marker.as_posix()}'\ncat\n",
+                      encoding="utf-8", newline="\n")
+    script.chmod(0o755)
+    return script
+
+
+@needs_git
+def test_hostile_repository_never_runs_its_code(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/cache.txt", "Add cache")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    marker = tmp_path / "marker.txt"
+    run = f"sh '{_evil_script(tmp_path, marker).as_posix()}'"
+    hooks = repo / ".git" / "hooks"
+    for hook in ("post-index-change", "reference-transaction", "post-checkout",
+                 "pre-commit", "fsmonitor-watchman"):
+        (hooks / hook).write_text(f"#!/bin/sh\n{run}\n", encoding="utf-8", newline="\n")
+        (hooks / hook).chmod(0o755)
+    for key, value in (("core.fsmonitor", str(hooks / "fsmonitor-watchman")),
+                       ("filter.evil.clean", run), ("filter.evil.smudge", run),
+                       ("filter.evil.process", run), ("filter.evil.required", "true"),
+                       ("diff.external", run), ("diff.evil.textconv", run),
+                       ("diff.evil.command", run), ("log.showSignature", "true"),
+                       ("gpg.program", run), ("core.pager", run), ("pager.status", run),
+                       ("core.sshCommand", run), ("credential.helper", f"!{run}")):
+        git(repo, "config", key, value)
+    (repo / ".gitattributes").write_text("*.txt filter=evil diff=evil\n", encoding="utf-8")
+    (repo / "src" / "cache.txt").write_text("changed\n", encoding="utf-8")
+    index = (repo / ".git" / "index").read_bytes()
+
+    # Control: plain git does run the repository's code.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                   capture_output=True, env=env)
+    assert marker.exists(), "the hostile config did not fire under plain git"
+    marker.unlink()
+    (repo / ".git" / "index").write_bytes(index)
+
+    findings = audit(tmp_path, repo, commit_records("Add cache") + [
+        assistant_tool("w1", "Write", {"file_path": str(repo / "src" / "cache.txt"),
+                                       "content": "changed"}),
+        tool_result("w1", "ok"),
+        assistant_tool("p1", "Bash", {"command": "git push"}), tool_result("p1", "ok"),
+        assistant_text("I created `src/cache.txt`."),
+        assistant_text("I committed the changes."),
+        assistant_text("Pushed the branch to origin."),
+        assistant_text(f"Committed as `{sha[:8]}`."),
+    ])
+    assert not marker.exists()
+    assert (repo / ".git" / "index").read_bytes() == index  # nothing written
+    verdicts = {f.claim.type: f for f in findings}
+    for claim_type in (ClaimType.COMMIT_MADE, ClaimType.PUSHED, ClaimType.COMMIT_ID):
+        assert verdicts[claim_type].verdict is Verdict.VERIFIED, verdicts[claim_type]
+        assert verdicts[claim_type].evidence.endswith("[in git]")
+    assert "in session commit" in verdicts[ClaimType.FILE_CREATED].evidence
+
+
+@needs_git
+def test_cli_reads_git_with_the_disk_check_on(tmp_path, capsys):
+    import json
+    repo = make_repo(tmp_path)
+    records = commit_records("Add cache") + [assistant_text("I committed the changes.")]
+    for record in records:
+        if record.get("type") == "assistant":
+            record["cwd"] = str(repo)
+    path = write_jsonl(tmp_path / "s.jsonl", records)
+    assert main(["audit", path, "--json"]) == 0
+    claim, = json.loads(capsys.readouterr().out)["claims"]
+    assert claim["verdict"] == "contradicted" and claim["evidence_source"] == "git"

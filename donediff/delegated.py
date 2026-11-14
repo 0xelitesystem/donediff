@@ -37,7 +37,7 @@ import os
 import re
 from pathlib import Path
 
-from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types
+from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from .gaming import signals_for_event
 from .models import Event, EventKind, Session, Source
 from .parser import (
@@ -261,6 +261,7 @@ def read_source(source: Source) -> Source:
                     exit_code_of(event)
                     event.failure_hint = bool(FAILURE_IN_OUTPUT.search(event.output))
                     event.pass_hint = bool(PASS_IN_OUTPUT.search(event.output))
+                    event.passed_counts = passed_counts(event.output)
                     bid = (background_id(tool_use_result, event.output)
                            if event.tool_name in _SHELL_TOOLS else None)
                     event.output = ""

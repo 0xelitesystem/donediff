@@ -49,6 +49,17 @@ COMMAND_EVIDENCE: dict[ClaimType, re.Pattern] = {
     ),
     ClaimType.COMMIT_MADE: re.compile(r"git\s+commit\b", re.IGNORECASE),
     ClaimType.PUSHED: re.compile(r"git\s+push\b", re.IGNORECASE),
+    # Deploy-type commands: the whole list, kept short on purpose.
+    ClaimType.DEPLOYED: re.compile(
+        r"(?:(?:npx|bunx|pnpm\s+dlx|yarn)\s+)?"
+        r"(?:wrangler\s+(?:pages\s+)?deploy\b|wrangler\s+publish\b"
+        r"|vercel\s+(?:deploy\b|--prod\b)|netlify\s+deploy\b)"
+        r"|gh\s+release\s+create\b"
+        r"|(?:python\s+-m\s+)?twine\s+upload\b"
+        r"|(?:npm|pnpm|yarn)\s+publish\b"
+        r"|(?:rsync|scp)\b.*\s['\"]?(?:[^\s@:'\"]+@)?[A-Za-z0-9][\w.-]+:",  # to a host
+        re.IGNORECASE,
+    ),
 }
 
 # Checks whose result says something about the code: tests, builds, lint,
@@ -85,6 +96,70 @@ PASS_IN_OUTPUT = re.compile(
     r"|\bcompiled successfully\b|\bSuccessfully built\b|^\s*Finished\b",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# How many tests a run's output says passed: pytest, jest, vitest, cargo
+# ("N passed"), mocha ("N passing"), node --test and TAP ("# pass N"),
+# unittest ("Ran N tests").
+_PASSED_COUNT = re.compile(
+    r"\b(\d+)\s+(?:passed|passing)\b"
+    r"|^\S*\s*pass\s+(\d+)\s*$"
+    r"|^Ran\s+(\d+)\s+tests?\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CARGO_RESULT = re.compile(r"test result: ok\. (\d+) passed", re.IGNORECASE)
+
+
+def passed_counts(output: str) -> frozenset[int]:
+    """Counts of passing tests the output reports as a total: the last one
+    shown, and for cargo (one result line per test binary) their sum."""
+    if not output:
+        return frozenset()
+    found = [int(next(g for g in m.groups() if g)) for m in _PASSED_COUNT.finditer(output)]
+    if not found:
+        return frozenset()
+    totals = {found[-1]}
+    cargo = [int(n) for n in _CARGO_RESULT.findall(output)]
+    if len(cargo) > 1:
+        totals.add(sum(cargo))
+    return frozenset(totals)
+
+
+# `-m "msg"`, `-am 'msg'`, `--message=msg` in a git commit command.
+_COMMIT_MESSAGE = re.compile(
+    r"""(?:^|\s)(?:-[A-Za-z]*m|--message)(?:=|\s+)"""
+    r"""(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s"']+))""",
+    re.DOTALL,
+)
+_GIT_COMMIT = re.compile(r"\bgit(?:\s+-[Cc]\s+\S+)*\s+commit\b")
+_HEREDOC_START = re.compile(r"^\$\(\s*cat\s+<<-?\s*['\"]?(\w+)['\"]?\s*\n", re.DOTALL)
+
+
+def commit_subjects(command: str) -> list[str]:
+    """First lines of the messages a `git commit` command gives with -m.
+
+    Handles the quoted forms and the `-m "$(cat <<'EOF' ... EOF)"` form.
+    An -F file or an editor message is unknown and gives nothing.
+    """
+    subjects: list[str] = []
+    start = _GIT_COMMIT.search(command)
+    if start is None:
+        return subjects
+    for match in _COMMIT_MESSAGE.finditer(command, start.end()):
+        double, single, bare = match.groups()
+        text = single if single is not None else (bare if bare is not None else
+                                                   re.sub(r"\\(.)", r"\1", double))
+        heredoc = _HEREDOC_START.match(text)
+        if heredoc:
+            body = text[heredoc.end():]
+            lines = [ln.strip() for ln in body.splitlines()]
+            text = next((ln for ln in lines if ln and ln != heredoc.group(1)), "")
+        elif "$(" in text or "`" in text:
+            continue  # built by the shell at run time: not known
+        subject = " ".join(text.strip().splitlines()[0].split()) if text.strip() else ""
+        if subject:
+            subjects.append(subject)
+    return subjects
+
 
 # Flags that make a check program print something and exit without
 # running the check: a version or help probe, a listing, a dry run.

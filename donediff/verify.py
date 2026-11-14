@@ -37,14 +37,17 @@ from __future__ import annotations
 
 import bisect
 import re
+from dataclasses import replace
 from pathlib import Path
 
-from .evidence import CHECK_TYPES, masked_exit, stage_types
+from .evidence import CHECK_TYPES, commit_subjects, masked_exit, stage_types
+from .gitstate import GitError, GitRepo
 from .models import (
     Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
 )
+from .parser import epoch
 from .redact import redact_secrets
-from .shell import norm_path, run_directory
+from .shell import is_remote_path, norm_path, run_directory
 
 RELAYED_REASON = "relayed from an agent's report, no command result seen"
 MASKED_REASON = "exit code hidden by a pipe and output does not show the result"
@@ -213,7 +216,8 @@ class _Context:
         self.key = timeline.claim_key(claim)
         delivered = timeline.relay_keys(claim)
         self.restrict = delivered or None
-        self.relayed = bool(delivered) or bool(_RELAY_WORDING.search(claim.quote))
+        self.relayed = bool(delivered) or bool(
+            _RELAY_WORDING.search(claim.sentence or claim.quote))
 
 
 def _unverified(claim: Claim, ctx: _Context, reason: str) -> Finding:
@@ -232,11 +236,24 @@ def _found(claim: Claim, ctx: _Context, verdict: Verdict, evidence: str,
     )
 
 
-def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context) -> Finding:
-    last = timeline.last_run(claim.type, ctx.key, ctx.restrict)
+def _note(finding: Finding, text: str) -> Finding:
+    """The finding with `text` added at the end of its evidence."""
+    return replace(finding, evidence=f"{finding.evidence}; {text}")
+
+
+_NO_RUN_REASON = {
+    ClaimType.DEPLOYED: "no deploy command (wrangler, vercel, netlify, gh release, "
+                        "twine, npm publish, rsync or scp to a host) ran before the claim",
+}
+
+
+def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
+                          evidence_type: ClaimType | None = None) -> Finding:
+    kind = evidence_type or claim.type
+    last = timeline.last_run(kind, ctx.key, ctx.restrict)
     if last is None:
-        return _unverified(claim, ctx,
-                           "no command that could back this claim was run before it")
+        return _unverified(claim, ctx, _NO_RUN_REASON.get(
+            kind, "no command that could back this claim was run before it"))
     run_key, run = last
     if _command_failed(run):
         if run.is_error or (run.exit_code or 0) != 0:
@@ -250,11 +267,11 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context) -> Fi
     if reason:
         return _found(claim, ctx, Verdict.UNVERIFIED,
                       f"{reason}: `{_short(run.command)}`", run)
-    if claim.type in CHECK_TYPES:
+    if kind in CHECK_TYPES:
         # Only edits inside the folder the check ran in make it stale: a
         # parallel agent working on another repository does not.
         folder = run_directory(run.command, run.cwd,
-                               lambda stage: claim.type in stage_types(stage))
+                               lambda stage: kind in stage_types(stage))
         edits_after = timeline.edits_between(run_key, ctx.key, ctx.restrict, folder)
         if edits_after:
             files = {Path(e.file_path).name for e in edits_after if e.file_path}
@@ -268,15 +285,7 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context) -> Fi
                   f"{_masked_note(run)})", run)
 
 
-def _is_remote_path(path: str | Path) -> bool:
-    """UNC, device or NT-namespace path (\\\\host\\share, //host/share, \\??\\...).
-
-    Paths come from the transcript, so they are untrusted. On Windows,
-    stat-ing \\\\host\\share opens an SMB connection to that host and sends
-    the user's NTLM credentials, so these are never touched.
-    """
-    text = str(path).replace("/", "\\")
-    return text.startswith("\\\\") or text.startswith("\\??\\")
+_is_remote_path = is_remote_path  # kept under its old name for callers and tests
 
 
 def _local_candidates(session: Session, claim: Claim,
@@ -302,15 +311,22 @@ def _local_candidates(session: Session, claim: Claim,
     return candidates, skipped
 
 
-def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
-                         check_disk: bool) -> Finding:
-    session = timeline.session
+def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
+    """Write/Edit calls before the claim to a file with the claimed name."""
     name = Path(claim.detail).name
-    writes = [
+    return [
         e for e in timeline.writes_before(ctx.key, ctx.restrict)
         if e.tool_name in ("Write", "Edit", "NotebookEdit")
         and Path(e.file_path).name == name
     ]
+
+
+def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
+                         check_disk: bool) -> Finding:
+    """A file the claim says was created or edited: written in-session, on disk."""
+    session = timeline.session
+    name = Path(claim.detail).name
+    writes = _matching_writes(timeline, claim, ctx)
     if not writes:
         return _unverified(claim, ctx,
                            f"no Write/Edit call for `{name}` appears before the claim")
@@ -355,16 +371,258 @@ def _verify_task_done(timeline: Timeline, claim: Claim, ctx: _Context) -> Findin
                        "no test/build/typecheck ran between the final edit and this claim")
 
 
+def _verify_test_count(timeline: Timeline, claim: Claim, ctx: _Context) -> Finding:
+    """'N of N pass': a passing test run before it whose output shows N passed."""
+    finding = _verify_command_claim(timeline, claim, ctx, ClaimType.TESTS_PASS)
+    if finding.verdict not in (Verdict.VERIFIED, Verdict.STALE):
+        return finding
+    _, run = timeline.last_run(ClaimType.TESTS_PASS, ctx.key, ctx.restrict)
+    claimed = int(claim.detail)
+    if not run.passed_counts:
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"the run's output shows no test count to match {claimed}: "
+                      f"`{_short(run.command)}`", run)
+    if claimed not in run.passed_counts:
+        shown = " or ".join(str(n) for n in sorted(run.passed_counts))
+        return _found(claim, ctx, Verdict.CONTRADICTED,
+                      f"claimed {claimed} passing, the run's output shows {shown} "
+                      f"passed: `{_short(run.command)}`", run)
+    return _note(finding, f"output shows {claimed} passed")
+
+
+def _ids_match(claimed: str, printed: str) -> bool:
+    printed = printed.lower()
+    return printed.startswith(claimed) or claimed.startswith(printed)
+
+
+_PRINTED_ID = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+
+
+def _verify_commit_id(timeline: Timeline, claim: Claim, ctx: _Context) -> Finding:
+    """A commit id named in a claim, from the transcript: a commit command printed it."""
+    for run in timeline.runs_before(ClaimType.COMMIT_MADE, ctx.key, None):
+        if _command_failed(run):
+            continue
+        if any(_ids_match(claim.detail, m) for m in _PRINTED_ID.findall(run.output[:4000])):
+            return _found(claim, ctx, Verdict.VERIFIED,
+                          f"`{_short(run.command)}` printed commit {claim.detail[:12]}", run)
+    return _unverified(claim, ctx,
+                       f"no commit command in the transcript printed {claim.detail[:12]}")
+
+
+# A shell command writing a file: redirection, -o/--output, PowerShell writers, tee.
+_SHELL_WRITE = re.compile(
+    r"(?:>>?|\s-o|\s--output(?:=|\s)|\s--out(?:=|\s)"
+    r"|\bOut-File(?:\s+-FilePath)?|\b(?:Set|Add)-Content(?:\s+-Path)?|\btee(?:\s+-a)?)"
+    r"\s*[\"']?([^\s\"'|;&<>]+)",
+    re.IGNORECASE,
+)
+
+
+def _same_file(path: str, base: str, claimed: str, claimed_base: str) -> bool:
+    a = norm_path(path, norm_path(base) if base else None)
+    b = norm_path(claimed, norm_path(claimed_base) if claimed_base else None)
+    if a is not None and b is not None:
+        return a == b
+    return Path(path.replace("\\", "/")).name.lower() == \
+        Path(claimed.replace("\\", "/")).name.lower()
+
+
+def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
+                         check_disk: bool) -> Finding:
+    """'Report at / saved to / wrote <path>': written in-session, and on disk."""
+    session = timeline.session
+    target = claim.detail
+    writes = [e for e in timeline.writes_before(ctx.key, ctx.restrict)
+              if e.file_path and _same_file(e.file_path, e.cwd or session.cwd,
+                                            target, session.cwd)]
+    shell_paths: list[tuple[Event, str]] = []
+    for event in session.events[:claim.event_index]:
+        if event.kind is EventKind.TOOL_CALL and event.command and not _command_failed(event):
+            for path in _SHELL_WRITE.findall(event.command):
+                if _same_file(path, event.cwd or session.cwd, target, session.cwd):
+                    shell_paths.append((event, path))
+    if not writes and not shell_paths:
+        return _unverified(claim, ctx, f"no write to `{target}` appears before the claim")
+    last = writes[-1] if writes else shell_paths[-1][0]
+    how = (f"{last.tool_name} call for `{target}` found" if writes
+           else f"`{_short(last.command)}` wrote `{target}`")
+    if check_disk and session.cwd:
+        candidates, skipped = _local_candidates(session, claim, writes)
+        for event, path in shell_paths:
+            full = Path(event.cwd or session.cwd) / path
+            if is_remote_path(path) or is_remote_path(full):
+                skipped = True
+            else:
+                candidates.append(full)
+        if not any(p.exists() for p in candidates):
+            if skipped:
+                return _found(claim, ctx, Verdict.VERIFIED,
+                              f"{how}; disk not checked (network or device path)", last)
+            return _found(claim, ctx, Verdict.CONTRADICTED,
+                          f"`{target}` was written in-session but is not on disk now", last)
+        return _found(claim, ctx, Verdict.VERIFIED, f"{how} and it exists on disk", last)
+    return _found(claim, ctx, Verdict.VERIFIED, how, last)
+
+
+# -- git state ---------------------------------------------------------------
+
+_GIT_TYPES = frozenset({
+    ClaimType.COMMIT_MADE, ClaimType.PUSHED, ClaimType.FILE_CREATED,
+    ClaimType.FILE_EDITED, ClaimType.COMMIT_ID,
+})
+# Seconds around the session's first and last record (and the claim) that
+# still count as inside it: commit times come from the same clock, but a
+# commit is stamped a moment before its result is logged.
+_WINDOW_SLACK = 120.0
+
+
+def _git_finding(claim: Claim, ctx: _Context, verdict: Verdict, evidence: str) -> Finding:
+    return Finding(claim=claim, verdict=verdict, evidence=f"{evidence} [in git]",
+                   evidence_source="git", relayed=ctx.relayed)
+
+
+def _subject_text(subject: str) -> str:
+    return _short(subject, 60).replace("`", "'")
+
+
+class _GitCheck:
+    """Checks a claim against the project's git state (local refs only)."""
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.repo = GitRepo(session.cwd)
+        self.reason = self.repo.reason
+        start, end = epoch(session.first_timestamp), epoch(session.last_timestamp)
+        if not self.reason and (start is None or end is None):
+            self.reason = "no timestamps in the transcript"
+        self.start = (start or 0.0) - _WINDOW_SLACK
+        self.end = (end or 0.0) + _WINDOW_SLACK
+
+    def close(self) -> None:
+        self.repo.close()
+
+    def _session_commits(self, until: float):
+        """Session commits made by `until`, newest first (one git log per audit)."""
+        return [c for c in self.repo.commits_between(self.start, self.end) if c.time <= until]
+
+    def check(self, timeline: Timeline, claim: Claim, ctx: _Context,
+              finding: Finding) -> Finding:
+        if self.reason:
+            return _note(finding, f"git state not checked ({self.reason})")
+        t = timeline.session.events[claim.event_index].t
+        until = (t if t != float("-inf") else self.end) + _WINDOW_SLACK
+        try:
+            if claim.type is ClaimType.COMMIT_MADE:
+                return self._committed(timeline, claim, ctx, until)
+            if claim.type is ClaimType.PUSHED:
+                return self._pushed(claim, ctx, finding, until)
+            if claim.type is ClaimType.COMMIT_ID:
+                return self._commit_id(claim, ctx)
+            return self._file(timeline, claim, ctx, finding)
+        except GitError as exc:
+            self.reason = str(exc)
+            return _note(finding, f"git state not checked ({self.reason})")
+
+    def _committed(self, timeline, claim, ctx, until) -> Finding:
+        commits = self._session_commits(until)
+        if not commits:
+            return _git_finding(claim, ctx, Verdict.CONTRADICTED,
+                                "no commit was made in this repository during the session "
+                                "(git log of local branches)")
+        subjects = {s for run in timeline.runs_before(ClaimType.COMMIT_MADE, ctx.key, None)
+                    for s in commit_subjects(run.command)}
+        if subjects:
+            match = next((c for c in commits if " ".join(c.subject.split()) in subjects), None)
+            if match is None:
+                wanted = _subject_text(sorted(subjects)[0])
+                return _git_finding(claim, ctx, Verdict.CONTRADICTED,
+                                    f"no commit made during the session has the subject "
+                                    f"`{wanted}` that the transcript's git commit gave")
+            return _git_finding(claim, ctx, Verdict.VERIFIED,
+                                f"commit {match.short} `{_subject_text(match.subject)}` "
+                                f"made during the session is in the repository")
+        return _git_finding(claim, ctx, Verdict.VERIFIED,
+                            f"commit {commits[0].short} made during the session "
+                            f"is in the repository")
+
+    def _pushed(self, claim, ctx, finding, until) -> Finding:
+        commits = self._session_commits(until)
+        if not commits:
+            return _note(finding, "git state not checked (no commit made during the session)")
+        if not self.repo.remote_refs():
+            return _note(finding, "git state not checked "
+                                  "(the repository has no remote-tracking branches)")
+        newest = commits[0]
+        refs = self.repo.remote_branches_containing(newest.sha)
+        if refs:
+            return _git_finding(claim, ctx, Verdict.VERIFIED,
+                                f"commit {newest.short} is on {_short(refs[0], 60)} "
+                                f"(local remote-tracking refs, not fetched)")
+        return _git_finding(claim, ctx, Verdict.CONTRADICTED,
+                            f"commit {newest.short} made during the session is on no "
+                            f"remote-tracking branch (local refs, not fetched)")
+
+    def _commit_id(self, claim, ctx) -> Finding:
+        short = claim.detail[:12]
+        if self.repo.has_commit(claim.detail):
+            return _git_finding(claim, ctx, Verdict.VERIFIED,
+                                f"commit {short} exists in the repository")
+        return _git_finding(claim, ctx, Verdict.CONTRADICTED,
+                            f"commit {short} is not in this repository")
+
+    def _file(self, timeline, claim, ctx, finding) -> Finding:
+        if finding.verdict is Verdict.CONTRADICTED:
+            return finding  # already not on disk; git cannot add to that
+        named = [claim.detail] + [w.file_path for w in _matching_writes(timeline, claim, ctx)]
+        rels = [r for r in (self.repo.relative(p) for p in named) if r is not None]
+        if not rels:
+            return _note(finding, "git state not checked (path is outside the project)")
+        bare = "/" not in claim.detail and "\\" not in claim.detail
+        commits = self.repo.commits_between(self.start, self.end)
+        how, short = self.repo.where_touched(rels, commits,
+                                             name=Path(claim.detail).name if bare else None)
+        if how == "commit":
+            if finding.verdict is Verdict.VERIFIED:
+                return _note(finding, f"in session commit {short}")
+            return _git_finding(claim, ctx, Verdict.VERIFIED,
+                                f"`{claim.detail}` is in session commit {short}")
+        if how == "working":
+            return _note(finding, "in the working-tree changes"
+                         if finding.verdict is Verdict.VERIFIED
+                         else "it has working-tree changes")
+        if how == "ignored":
+            return _note(finding, "git state not checked (git ignores this path)")
+        return _git_finding(claim, ctx, Verdict.CONTRADICTED,
+                            f"names a file the diff does not touch: `{claim.detail}` is in "
+                            f"no session commit and has no working-tree change")
+
+
 def verify_claims(session: Session, claims: list[Claim],
                   check_disk: bool = True) -> list[Finding]:
     timeline = Timeline(session)
     findings: list[Finding] = []
-    for claim in claims:
-        ctx = _Context(timeline, claim)
-        if claim.type is ClaimType.FILE_CREATED:
-            findings.append(_verify_file_created(timeline, claim, ctx, check_disk))
-        elif claim.type is ClaimType.TASK_DONE:
-            findings.append(_verify_task_done(timeline, claim, ctx))
-        else:
-            findings.append(_verify_command_claim(timeline, claim, ctx))
+    git = (_GitCheck(session)
+           if check_disk and any(c.type in _GIT_TYPES for c in claims) else None)
+    try:
+        for claim in claims:
+            ctx = _Context(timeline, claim)
+            if claim.type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED):
+                finding = _verify_file_created(timeline, claim, ctx, check_disk)
+            elif claim.type is ClaimType.TASK_DONE:
+                finding = _verify_task_done(timeline, claim, ctx)
+            elif claim.type is ClaimType.TEST_COUNT:
+                finding = _verify_test_count(timeline, claim, ctx)
+            elif claim.type is ClaimType.COMMIT_ID:
+                finding = _verify_commit_id(timeline, claim, ctx)
+            elif claim.type is ClaimType.PATH_WRITTEN:
+                finding = _verify_path_written(timeline, claim, ctx, check_disk)
+            else:
+                finding = _verify_command_claim(timeline, claim, ctx)
+            if git is not None and claim.type in _GIT_TYPES:
+                finding = git.check(timeline, claim, ctx, finding)
+            findings.append(finding)
+    finally:
+        if git is not None:
+            git.close()
     return findings

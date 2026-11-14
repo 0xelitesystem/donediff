@@ -21,8 +21,19 @@ _DISQUALIFIERS = re.compile(
     re.IGNORECASE,
 )
 
-# Claim patterns, tried in order. FILE_CREATED captures the path.
+# A path named in a claim: in backticks, or bare with a file extension.
+_PATH = (r"(?:`([^`\s]+)`"
+         r"|((?:[A-Za-z]:)?[\w.\\/-]*[\w-]\.[A-Za-z0-9]{1,10})(?![\w\\/]))")
+
+# The claim-word table: every phrasing donediff reads as a claim, in one
+# place, tried in order. Each phrasing here has a test in test_claims.py.
+# The groups capture the claim's detail (see _detail).
 _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
+    (ClaimType.TEST_COUNT, re.compile(
+        r"\b(\d+)\s+of\s+(\d+)\s+(?:tests?\s+)?(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?)\b"
+        r"|\b(\d+)\s*/\s*(\d+)\s+tests?\b",
+        re.IGNORECASE,
+    )),
     (ClaimType.TESTS_PASS, re.compile(
         r"\b(?:all\s+)?(?:\d+\s+)?tests?\s+(?:are\s+|now\s+|still\s+)?"
         r"(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?)\b"
@@ -50,6 +61,29 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     (ClaimType.FILE_CREATED, re.compile(
         r"\bcreated\s+(?:the\s+(?:file\s+)?|a\s+(?:new\s+)?(?:file\s+)?|file\s+)?"
         r"`([^`\s]+\.[A-Za-z0-9]{1,10})`",
+        re.IGNORECASE,
+    )),
+    (ClaimType.FILE_EDITED, re.compile(
+        r"\b(?:edited|updated|modified)\s+(?:the\s+(?:file\s+)?|file\s+)?"
+        r"`([^`\s]+\.[A-Za-z0-9]{1,10})`",
+        re.IGNORECASE,
+    )),
+    (ClaimType.PATH_WRITTEN, re.compile(
+        r"\breport\s+(?:is\s+)?(?:at|in)\s+" + _PATH
+        + r"|\bsaved\s+(?:it\s+|them\s+|(?:the|a)\s+\w+\s+)?(?:to|at|as)\s+" + _PATH
+        + r"|\bwrote\s+(?:it\s+|them\s+|(?:the|a)\s+\w+\s+)?(?:to\s+)?" + _PATH,
+        re.IGNORECASE,
+    )),
+    (ClaimType.COMMIT_ID, re.compile(
+        r"\bcommit(?:ted)?(?:\s+(?:as|in|at))?(?:\s+(?:id|hash|sha))?[\s:]+[`(]?"
+        r"([0-9a-fA-F]{7,40})\b",
+        re.IGNORECASE,
+    )),
+    (ClaimType.DEPLOYED, re.compile(
+        r"\bdeployed\s+(?:it|this|that|them|everything|the\s+\w+|to\s+\w+|v?\d[\w.]*)"
+        r"|\b(?:has|have)\s+been\s+deployed\b|\b(?:is|are)\s+(?:now\s+)?deployed\b"
+        r"|\bshipped\s+to\s+production\b"
+        r"|\b(?:is|are)\s+(?:now\s+)?live\b",
         re.IGNORECASE,
     )),
     (ClaimType.COMMIT_MADE, re.compile(
@@ -92,21 +126,46 @@ def extract_claims(session: Session) -> list[Claim]:
                 continue  # code blocks / pasted output, not prose
             if _DISQUALIFIERS.search(sentence):
                 continue
-            for claim_type, pattern in _PATTERNS:
-                match = pattern.search(sentence)
-                if not match:
-                    continue
-                detail = ""
-                if claim_type is ClaimType.FILE_CREATED:
-                    detail = match.group(1) or ""
-                claims.append(Claim(
-                    type=claim_type,
-                    quote=sentence[:200],
-                    event_index=event.index,
-                    detail=detail,
-                ))
-                # no break: "tests pass and I committed" is two claims
+            claims.extend(_sentence_claims(sentence, event.index))
     return _dedupe(claims)
+
+
+def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
+    """The claim's detail from its match, or None when it is no claim."""
+    groups = [g for g in match.groups() if g]
+    if claim_type is ClaimType.TEST_COUNT:
+        passed, total = groups[0], groups[1]
+        # "38 of 40 pass" admits failures; only "N of N" claims all pass.
+        return passed if int(passed) == int(total) and int(passed) > 0 else None
+    if claim_type is ClaimType.COMMIT_ID:
+        # A digit sets an id apart from a hex-letter word ("defaced").
+        return groups[0].lower() if any(c.isdigit() for c in groups[0]) else None
+    return groups[0] if groups else ""
+
+
+def _sentence_claims(sentence: str, index: int) -> list[Claim]:
+    found: list[tuple[ClaimType, str, str]] = []
+    for claim_type, pattern in _PATTERNS:
+        match = pattern.search(sentence)
+        if not match:
+            continue
+        detail = _detail(claim_type, match)
+        if detail is None:
+            continue
+        found.append((claim_type, match.group(0).strip(), detail))
+        # no break: "tests pass and I committed" is two claims
+    if any(t is ClaimType.TEST_COUNT for t, _, _ in found):
+        # "12 of 12 tests pass" is one claim, checked with its count.
+        found = [f for f in found if f[0] is not ClaimType.TESTS_PASS]
+    several = len(found) > 1
+    # A sentence holding two claims is quoted by the phrase each matched,
+    # so a finding shows what it judged, not its neighbour's words.
+    return [Claim(type=claim_type,
+                  quote=(phrase if several else sentence)[:200],
+                  event_index=index,
+                  detail=detail,
+                  sentence=sentence[:400] if several else "")
+            for claim_type, phrase, detail in found]
 
 
 def _dedupe(claims: list[Claim]) -> list[Claim]:
