@@ -1,0 +1,5 @@
+{"timestamp": "2026-06-10T12:00:00.000Z", "type": "session_meta", "payload": {"id": "golden-noresult-codex", "timestamp": "2026-06-10T12:00:00.000Z", "cwd": "/home/dev/golden", "originator": "codex_cli_rs", "cli_version": "0.0.0-test", "source": "cli", "model_provider": "test", "history_mode": "legacy"}}
+{"timestamp": "2026-06-10T12:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Running the checks."}]}}
+{"timestamp": "2026-06-10T12:00:02.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "c1", "arguments": "{\"cmd\": \"python -m pytest -q\"}"}}
+{"timestamp": "2026-06-10T12:00:03.000Z", "type": "response_item", "payload": {"type": "local_shell_call", "call_id": "c2", "action": {"type": "exec", "command": ["npm", "run", "build"]}}}
+{"timestamp": "2026-06-10T12:00:04.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "All tests pass. The build is clean."}]}}

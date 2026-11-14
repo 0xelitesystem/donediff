@@ -76,6 +76,7 @@ _RESPONSE_TYPES = frozenset({
 _SHELL_FUNCTIONS = frozenset({"exec_command", "shell", "shell_command", "container.exec",
                               "local_shell"})
 _PATCH_TOOLS = frozenset({"apply_patch", "applypatch"})
+_ENDED = frozenset({"completed", "failed", "incomplete", "declined"})  # not "in_progress"
 _WRAPPERS = frozenset({"bash", "sh", "zsh", "pwsh", "powershell", "cmd"})
 _WRAPPER_FLAGS = frozenset({"-c", "-lc", "-ic", "-command", "/c"})
 _HEADER_LINE = re.compile(
@@ -107,11 +108,12 @@ def sessions_dir() -> Path | None:
 
 
 def _subdirs(path: Path, pattern: re.Pattern) -> list[Path]:
-    """Child folders whose names match, never following a symlinked folder."""
+    """Child folders whose names match, never following a symlink or a Windows junction."""
     try:
         with os.scandir(path) as it:
             return sorted(Path(e.path) for e in it
-                          if pattern.match(e.name) and e.is_dir(follow_symlinks=False))
+                          if pattern.match(e.name) and e.is_dir(follow_symlinks=False)
+                          and not getattr(e, "is_junction", lambda: False)())
     except OSError:
         return []
 
@@ -371,7 +373,8 @@ class _Parse:
                cwd: str = "") -> Event:
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id,
-                      tool_input=tool_input, t=self.clock, cwd=cwd or self.cwd)
+                      tool_input=tool_input, t=self.clock, cwd=cwd or self.cwd,
+                      result_seen=False)
         if action == SHELL:
             event.check_types = check_types(event.command)
         self.session.events.append(event)
@@ -389,6 +392,8 @@ class _Parse:
         event = self._event(name, SHELL, call_id, {"command": command},
                             _join(self.cwd, clean_path(workdir)))
         event.status = status
+        if status in _ENDED:  # the call record itself says how the run ended
+            event.result_seen = True
         self._track(call_id, [event])
 
     def patch(self, name: str, call_id: str, text: str) -> None:
@@ -442,6 +447,7 @@ class _Parse:
             return
         text, success = output_text(raw)
         for event in events:
+            event.result_seen = True
             if event.tool_action == SHELL:
                 self._shell_output(event, text, success)
             else:
@@ -497,6 +503,7 @@ class _Parse:
         running = any(e is event for e, _ in self.running.values())
         if event.background and not running:
             return  # write_stdin already saw its exit
+        event.result_seen = True
         if isinstance(aggregated, str):
             event.output = aggregated
         if event.background:

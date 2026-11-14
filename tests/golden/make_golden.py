@@ -79,10 +79,49 @@ def coverage_records() -> list[dict]:
     ]
 
 
+def noresult_claude_records() -> list[dict]:
+    """SEC-197: a run whose result never reached the log must not read as passed."""
+    return [
+        _text("Running the checks."),
+        _tool("n1", "Bash", {"command": "npm run build"}),
+        _result("n1", "built in 1.2s"),
+        _tool("n2", "Bash", {"command": "python -m pytest -q"}),
+        _text("The build is clean. All tests pass."),
+    ]
+
+
+def _codex_line(second: int, rtype: str, payload: dict) -> dict:
+    return {"timestamp": f"2026-06-10T12:00:{second:02d}.000Z", "type": rtype, "payload": payload}
+
+
+def noresult_codex_records() -> list[dict]:
+    """SEC-197, Codex: exec_command with no output, local_shell_call with no status."""
+    def say(second: int, text: str) -> dict:
+        return _codex_line(second, "response_item", {
+            "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]})
+    return [
+        _codex_line(0, "session_meta", {
+            "id": "golden-noresult-codex", "timestamp": "2026-06-10T12:00:00.000Z", "cwd": "/home/dev/golden",
+            "originator": "codex_cli_rs", "cli_version": "0.0.0-test", "source": "cli",
+            "model_provider": "test", "history_mode": "legacy"}),
+        say(1, "Running the checks."),
+        _codex_line(2, "response_item", {"type": "function_call", "name": "exec_command", "call_id": "c1",
+                                         "arguments": json.dumps({"cmd": "python -m pytest -q"})}),
+        _codex_line(3, "response_item", {"type": "local_shell_call", "call_id": "c2",
+                                         "action": {"type": "exec", "command": ["npm", "run", "build"]}}),
+        say(4, "All tests pass. The build is clean."),
+    ]
+
+
+NO_RESULT_INPUTS = {"noresult-claude.jsonl": noresult_claude_records,
+                    "noresult-codex.jsonl": noresult_codex_records}
+
+
 def corpus() -> list[Path]:
     sessions = sorted(p for p in (REPO / "tests" / "fixtures" / "sessions" / "proj").glob("*.jsonl")
                       if p.name not in SKIP)
-    return [REPO / "examples" / "demo-session.jsonl", INPUTS / "coverage.jsonl", *sessions]
+    return [REPO / "examples" / "demo-session.jsonl", INPUTS / "coverage.jsonl",
+            *(INPUTS / name for name in NO_RESULT_INPUTS), *sessions]
 
 
 def render(path: Path, main_only: bool) -> dict[str, str]:
@@ -110,6 +149,9 @@ def write_inputs() -> None:
     INPUTS.mkdir(parents=True, exist_ok=True)
     (INPUTS / "coverage.jsonl").write_text("\n".join(json.dumps(r) for r in coverage_records()) + "\n",
                                           encoding="utf-8", newline="\n")
+    for name, records in NO_RESULT_INPUTS.items():
+        (INPUTS / name).write_text("\n".join(json.dumps(r) for r in records()) + "\n",
+                                   encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

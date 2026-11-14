@@ -104,6 +104,7 @@ def background_done(text: str) -> tuple[list[str], int] | None:
 
 def complete_background(event: Event, code: int, when: float, timestamp: str) -> None:
     """Turn a background launch into a finished run, from its completion notice."""
+    event.result_seen = True
     event.exit_code = code
     event.is_error = code != 0
     event.failure_hint = False
@@ -250,6 +251,7 @@ def parse_transcript(path: str | Path) -> Session:
                             tool_input=tool_input if isinstance(tool_input, dict) else {},
                             t=clock,
                             cwd=str(record.get("cwd", "") or ""),
+                            result_seen=False,
                         )
                         event.check_types = check_types(event.command)
                         session.events.append(event)
@@ -276,6 +278,7 @@ def parse_transcript(path: str | Path) -> Session:
                     event = pending.pop(str(block.get("tool_use_id", "")), None)
                     if event is None:
                         continue
+                    event.result_seen = True
                     event.is_error = bool(block.get("is_error"))
                     event.output = _result_text(block, tool_use_result)
                     exit_code_of(event)

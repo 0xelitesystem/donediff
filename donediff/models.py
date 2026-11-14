@@ -57,6 +57,10 @@ class Event:
     # How the run ended in words, for a reader whose log can lack an exit
     # code (Codex). With no exit code, a check reads this, never a made-up 0.
     status: str = ""
+    # Whether the log holds a result for this call. Readers set False when the
+    # call is made and True when its result (or completion notice) arrives;
+    # None = not tracked (hand-built events). False never reads as a success.
+    result_seen: bool | None = None
     output_truncated: bool = False  # the log cut the output short (Codex, 64 KiB)
     cwd: str = ""  # working directory the tool call started in
 

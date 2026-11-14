@@ -24,6 +24,22 @@ def test_coverage_input_matches_generator():
     assert [json.loads(line) for line in committed.splitlines() if line] == make_golden.coverage_records()
 
 
+@pytest.mark.parametrize("name", sorted(make_golden.NO_RESULT_INPUTS))
+def test_no_result_inputs_match_generator(name):
+    import json
+    committed = (GOLDEN / "inputs" / name).read_text(encoding="utf-8")
+    assert [json.loads(line) for line in committed.splitlines() if line] == \
+        make_golden.NO_RESULT_INPUTS[name]()
+
+
+def test_no_result_goldens_never_read_passed():
+    # SEC-197: the run with no result in the log is unverified, never "exit 0".
+    for stem in ("noresult-claude", "noresult-codex"):
+        text = EXPECTED[f"{stem}.all.md"]
+        assert "no result for this run in the log" in text
+        assert "pytest -q` succeeded" not in text
+
+
 def test_no_missing_or_extra_golden_files():
     on_disk = {p.name for p in (GOLDEN / "outputs").iterdir()}
     assert on_disk == set(EXPECTED)
