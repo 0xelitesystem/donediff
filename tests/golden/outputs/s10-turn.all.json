@@ -1,0 +1,36 @@
+{
+  "version": "<version>",
+  "transcript": "tests/fixtures/sessions/proj/s10-turn.jsonl",
+  "session_id": "s10-turn",
+  "cwd": "/work/app",
+  "scope": {
+    "main_only": false,
+    "subagent_transcripts": 2,
+    "workflow_agent_transcripts": 0,
+    "bytes": 0,
+    "seconds": 0.0
+  },
+  "score": 100,
+  "grade": "A",
+  "counts": {
+    "verified": 1,
+    "stale": 0,
+    "unverified": 0,
+    "contradicted": 0
+  },
+  "claims": [
+    {
+      "type": "tests_pass",
+      "quote": "All tests pass.",
+      "sentence": "All tests pass.",
+      "detail": "",
+      "verdict": "verified",
+      "evidence": "`pytest -q` succeeded (exit 0) [in sub-agent k1test (tester)]",
+      "claim_event": 2,
+      "evidence_event": null,
+      "evidence_source": "sub-agent k1test (tester)",
+      "relayed": false
+    }
+  ],
+  "gaming_signals": []
+}

@@ -1,0 +1,36 @@
+{
+  "version": "<version>",
+  "transcript": "tests/fixtures/sessions/proj/s5-red.jsonl",
+  "session_id": "s5-red",
+  "cwd": "/work/app",
+  "scope": {
+    "main_only": true,
+    "subagent_transcripts": 0,
+    "workflow_agent_transcripts": 0,
+    "bytes": 0,
+    "seconds": 0.0
+  },
+  "score": 25,
+  "grade": "F",
+  "counts": {
+    "verified": 0,
+    "stale": 0,
+    "unverified": 1,
+    "contradicted": 0
+  },
+  "claims": [
+    {
+      "type": "tests_pass",
+      "quote": "All tests pass.",
+      "sentence": "All tests pass.",
+      "detail": "",
+      "verdict": "unverified",
+      "evidence": "relayed from an agent's report, no command result seen",
+      "claim_event": 1,
+      "evidence_event": null,
+      "evidence_source": "",
+      "relayed": true
+    }
+  ],
+  "gaming_signals": []
+}

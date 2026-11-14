@@ -1,0 +1,13 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session s2-wf · 2 events · /work/app[0m
+[2m  evidence from the main transcript only (--main-only)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[31m25/100 (F)[0m
+[2m  0 verified · 0 stale · 2 unverified · 0 contradicted[0m
+
+[1m  CLAIMS[0m
+  [33m? UNVERIFIED  [0m “all 900 tests pass”
+[2m    └─ relayed from an agent's report, no command result seen[0m
+  [33m? UNVERIFIED  [0m “build is clean”
+[2m    └─ relayed from an agent's report, no command result seen[0m

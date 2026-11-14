@@ -1,0 +1,36 @@
+{
+  "version": "<version>",
+  "transcript": "tests/fixtures/sessions/proj/s12-pedit.jsonl",
+  "session_id": "s12-pedit",
+  "cwd": "/work/app",
+  "scope": {
+    "main_only": true,
+    "subagent_transcripts": 0,
+    "workflow_agent_transcripts": 0,
+    "bytes": 0,
+    "seconds": 0.0
+  },
+  "score": 100,
+  "grade": "A",
+  "counts": {
+    "verified": 1,
+    "stale": 0,
+    "unverified": 0,
+    "contradicted": 0
+  },
+  "claims": [
+    {
+      "type": "tests_pass",
+      "quote": "All tests pass.",
+      "sentence": "All tests pass.",
+      "detail": "",
+      "verdict": "verified",
+      "evidence": "`pytest -q` succeeded (exit 0) [in main]",
+      "claim_event": 1,
+      "evidence_event": 0,
+      "evidence_source": "main",
+      "relayed": false
+    }
+  ],
+  "gaming_signals": []
+}

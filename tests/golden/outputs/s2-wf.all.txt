@@ -1,0 +1,16 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session s2-wf · 2 events · /work/app[0m
+[2m  evidence from main + 0 sub-agent and 1 workflow-agent transcripts (0.0 MB read in 0.0 s)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[32m92/100 (A)[0m
+[2m  2 verified · 0 stale · 0 unverified · 0 contradicted · 1 gaming signal(s)[0m
+
+[1m  CLAIMS[0m
+  [32m✓ VERIFIED    [0m “all 900 tests pass”
+[2m    └─ `cd /work/app && npm test 2>&1 | tail -3` succeeded (exit 0, exit code hidden by a pipe, output shows a pass) [in workflow wf_fx-001, agent b1build (build and test)][0m
+  [32m✓ VERIFIED    [0m “build is clean”
+[2m    └─ `npm run build` succeeded (exit 0) [in workflow wf_fx-001, agent b1build (build and test)][0m
+
+[1m  GAMING SIGNALS[0m
+  [33m⚠ MED  [0m [workflow wf_fx-001, agent b1build (build and test)] check piped into `tail`, so its exit code is lost: `npm test 2>&1 | tail -3`

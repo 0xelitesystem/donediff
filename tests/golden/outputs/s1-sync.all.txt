@@ -1,0 +1,11 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session s1-sync · 2 events · /work/app[0m
+[2m  evidence from main + 1 sub-agent and 0 workflow-agent transcripts (0.0 MB read in 0.0 s)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[32m100/100 (A)[0m
+[2m  1 verified · 0 stale · 0 unverified · 0 contradicted[0m
+
+[1m  CLAIMS[0m
+  [32m✓ VERIFIED    [0m “All 12 tests pass.”
+[2m    └─ `cd /work/app && python -m pytest -q` succeeded (exit 0) [in sub-agent a1sync (fix parser)][0m
