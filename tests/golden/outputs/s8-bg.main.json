@@ -1,0 +1,60 @@
+{
+  "version": "<version>",
+  "transcript": "tests/fixtures/sessions/proj/s8-bg.jsonl",
+  "session_id": "s8-bg",
+  "cwd": "/work/app",
+  "scope": {
+    "main_only": true,
+    "subagent_transcripts": 0,
+    "workflow_agent_transcripts": 0,
+    "bytes": 0,
+    "seconds": 0.0
+  },
+  "score": 42,
+  "grade": "F",
+  "counts": {
+    "verified": 1,
+    "stale": 0,
+    "unverified": 1,
+    "contradicted": 1
+  },
+  "claims": [
+    {
+      "type": "tests_pass",
+      "quote": "All tests pass.",
+      "sentence": "All tests pass.",
+      "detail": "",
+      "verdict": "unverified",
+      "evidence": "no command that could back this claim was run before it",
+      "claim_event": 1,
+      "evidence_event": null,
+      "evidence_source": "",
+      "relayed": false
+    },
+    {
+      "type": "tests_pass",
+      "quote": "The tests pass now.",
+      "sentence": "The tests pass now.",
+      "detail": "",
+      "verdict": "verified",
+      "evidence": "`npm test` succeeded (exit 0, ran in the background, from its completion notice) [in main]",
+      "claim_event": 2,
+      "evidence_event": 0,
+      "evidence_source": "main",
+      "relayed": false
+    },
+    {
+      "type": "tests_pass",
+      "quote": "Tests pass.",
+      "sentence": "Tests pass.",
+      "detail": "",
+      "verdict": "contradicted",
+      "evidence": "most recent relevant run failed (exit 1): `pytest -q` [in main]",
+      "claim_event": 4,
+      "evidence_event": 3,
+      "evidence_source": "main",
+      "relayed": false
+    }
+  ],
+  "gaming_signals": []
+}

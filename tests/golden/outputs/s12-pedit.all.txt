@@ -1,0 +1,11 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session s12-pedit · 2 events · /work/app[0m
+[2m  evidence from main + 1 sub-agent and 0 workflow-agent transcripts (0.0 MB read in 0.0 s)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[31m50/100 (F)[0m
+[2m  0 verified · 1 stale · 0 unverified · 0 contradicted[0m
+
+[1m  CLAIMS[0m
+  [33m◐ STALE       [0m “All tests pass.”
+[2m    └─ `pytest -q` passed, but core.py edited afterwards with no re-run before the claim [in main][0m

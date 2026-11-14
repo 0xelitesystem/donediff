@@ -1,0 +1,11 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session s12-pedit · 2 events · /work/app[0m
+[2m  evidence from the main transcript only (--main-only)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[32m100/100 (A)[0m
+[2m  1 verified · 0 stale · 0 unverified · 0 contradicted[0m
+
+[1m  CLAIMS[0m
+  [32m✓ VERIFIED    [0m “All tests pass.”
+[2m    └─ `pytest -q` succeeded (exit 0) [in main][0m

@@ -1,0 +1,36 @@
+{
+  "version": "<version>",
+  "transcript": "tests/fixtures/sessions/proj/s5-red.jsonl",
+  "session_id": "s5-red",
+  "cwd": "/work/app",
+  "scope": {
+    "main_only": false,
+    "subagent_transcripts": 0,
+    "workflow_agent_transcripts": 1,
+    "bytes": 0,
+    "seconds": 0.0
+  },
+  "score": 0,
+  "grade": "F",
+  "counts": {
+    "verified": 0,
+    "stale": 0,
+    "unverified": 0,
+    "contradicted": 1
+  },
+  "claims": [
+    {
+      "type": "tests_pass",
+      "quote": "All tests pass.",
+      "sentence": "All tests pass.",
+      "detail": "",
+      "verdict": "contradicted",
+      "evidence": "most recent relevant run failed (exit 1): `pytest -q` [in workflow wf_fx-005, agent f1fail (tester)]",
+      "claim_event": 1,
+      "evidence_event": null,
+      "evidence_source": "workflow wf_fx-005, agent f1fail (tester)",
+      "relayed": true
+    }
+  ],
+  "gaming_signals": []
+}
