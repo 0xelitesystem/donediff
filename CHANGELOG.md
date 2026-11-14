@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- A command whose result never reached the transcript (the session was cut off
+  or the run was killed) was marked VERIFIED as "succeeded (exit 0)". It is now
+  UNVERIFIED with the reason "no result for this run in the log", so it lowers
+  the score and counts against `--fail-under`. Runs that have a result keep
+  their verdicts.
+
 ## 0.4.0
 
 donediff now reads the project's git state.

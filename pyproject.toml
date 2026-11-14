@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "donediff"
-version = "0.4.0"
+version = "0.4.1"
 description = "Audit what your coding agent claimed against what it actually did."
 readme = "README.md"
 license = "MIT"
