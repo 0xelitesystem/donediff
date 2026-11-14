@@ -10,9 +10,16 @@ Options:
   --project NAME    only consider transcripts whose project folder matches
   --json            emit machine-readable JSON instead of the terminal report
   --md FILE         also write a Markdown report to FILE
-  --no-disk-check   skip filesystem checks (transcript evidence only)
-  --fail-under N    exit 1 if the Receipts Score is below N (CI gate)
+  --no-disk-check   skip filesystem and git checks (transcript evidence only)
+  --fail-under N    exit 1 if the donediff score is below N, exit 3 if the
+                    session has no score (CI gate)
   --no-color        disable ANSI colors
+
+Exit codes:
+  0  audit ran (and, with --fail-under, the score is N or more)
+  1  the score is below --fail-under N
+  2  transcript not found, or bad arguments
+  3  --fail-under was given and the session has no score (no checkable claims)
 """
 
 from __future__ import annotations
@@ -32,6 +39,16 @@ from .parser import discover_transcripts, parse_transcript, resolve_target
 from .report import render_json, render_markdown, render_terminal
 from .score import score_audit
 from .verify import verify_claims
+
+
+EXIT_BELOW = 1  # score below --fail-under
+EXIT_NO_SCORE = 3  # --fail-under given and the session has no score
+
+_EXIT_CODES = """exit codes:
+  0  audit ran (and, with --fail-under, the score is N or more)
+  1  the score is below --fail-under N
+  2  transcript not found, or bad arguments
+  3  --fail-under was given and the session has no score (no checkable claims)"""
 
 
 def run_audit(target: str, project: str | None = None, check_disk: bool = True,
@@ -82,8 +99,12 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             print(f"  markdown report written to {args.md}\n")
 
     if args.fail_under is not None:
-        if result.score is not None and result.score < args.fail_under:
-            return 1
+        if result.score is None:
+            print(f"donediff: no score (no checkable claims), which fails "
+                  f"--fail-under {args.fail_under} (exit {EXIT_NO_SCORE})", file=sys.stderr)
+            return EXIT_NO_SCORE
+        if result.score < args.fail_under:
+            return EXIT_BELOW
     return 0
 
 
@@ -108,7 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"donediff {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    audit = sub.add_parser("audit", help="audit one session transcript")
+    audit = sub.add_parser("audit", help="audit one session transcript",
+                           epilog=_EXIT_CODES,
+                           formatter_class=argparse.RawDescriptionHelpFormatter)
     audit.add_argument("target", help="transcript path, session-id prefix, or 'latest'")
     audit.add_argument("--project", help="filter session discovery by project name")
     audit.add_argument("--main-only", action="store_true",
@@ -116,9 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--json", action="store_true", help="JSON output")
     audit.add_argument("--md", metavar="FILE", help="write Markdown report to FILE")
     audit.add_argument("--no-disk-check", action="store_true",
-                       help="skip filesystem verification")
+                       help="skip filesystem and git verification")
     audit.add_argument("--fail-under", type=int, metavar="N",
-                       help="exit 1 if score < N (for CI)")
+                       help="exit 1 if the donediff score is below N, "
+                            "exit 3 if the session has no score (for CI)")
     audit.add_argument("--no-color", action="store_true", help="plain output")
     audit.set_defaults(func=_cmd_audit)
 
@@ -140,13 +164,6 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     args = build_parser().parse_args(argv)
     return args.func(args)
-
-
-def deprecated_main(argv: list[str] | None = None) -> int:
-    """The old `receipts` command. Kept for one release; use `donediff`."""
-    print("receipts: this command is now `donediff`; `receipts` will be removed in the next release.",
-          file=sys.stderr)
-    return main(argv)
 
 
 if __name__ == "__main__":

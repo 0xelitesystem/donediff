@@ -1,4 +1,4 @@
-"""Receipts Score: one number for how much of what the agent said it backed up.
+"""donediff score: one number for how much of what the agent said it backed up.
 
 Claims are weighted by verdict, gaming signals subtract on top:
 verified 1.0 · stale 0.5 · unverified 0.25 · contradicted 0.0

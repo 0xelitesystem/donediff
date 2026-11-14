@@ -1,6 +1,8 @@
 import json
+from pathlib import Path
 
-from donediff.cli import main, run_audit
+from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
+from donediff.cli import EXIT_NO_SCORE, main, run_audit
 
 
 def test_audit_json_output(honest_transcript, capsys):
@@ -44,9 +46,40 @@ def test_markdown_report(honest_transcript, tmp_path, capsys):
     assert "VERIFIED" in content
 
 
-def test_old_receipts_command_still_works_and_says_so(honest_transcript, capsys):
-    from donediff.cli import deprecated_main
-    assert deprecated_main(["audit", str(honest_transcript), "--json", "--no-disk-check"]) == 0
-    captured = capsys.readouterr()
-    assert "now `donediff`" in captured.err
-    assert captured.out.lstrip().startswith("{")
+def test_old_receipts_alias_is_gone():
+    import donediff.cli as cli
+    assert not hasattr(cli, "deprecated_main")
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    scripts = pyproject.read_text(encoding="utf-8").split("[project.scripts]", 1)[1]
+    scripts = scripts.split("[", 1)[0]
+    assert "donediff = " in scripts and "receipts" not in scripts
+
+
+def _no_claims_transcript(tmp_path):
+    records = [assistant_text("I'll take a look at the parser."),
+               assistant_tool("t1", "Bash", {"command": "ls"}),
+               tool_result("t1", "src tests")]
+    return write_jsonl(tmp_path / "quiet.jsonl", records)
+
+
+def test_no_score_fails_the_gate_with_its_own_code(tmp_path, capsys):
+    path = _no_claims_transcript(tmp_path)
+    assert main(["audit", path, "--no-disk-check", "--fail-under", "80",
+                 "--no-color"]) == EXIT_NO_SCORE == 3
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "no score" in err[0] and "exit 3" in err[0]
+
+
+def test_no_score_without_gate_still_exits_0(tmp_path, capsys):
+    path = _no_claims_transcript(tmp_path)
+    assert main(["audit", path, "--no-disk-check", "--no-color"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_help_names_the_score_and_exit_codes(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        main(["audit", "--help"])
+    out = capsys.readouterr().out
+    assert "donediff score" in out and "Receipts" not in out
+    assert "3  --fail-under was given and the session has no score" in out
