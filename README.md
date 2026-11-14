@@ -10,9 +10,9 @@ Zero dependencies. Pure Python stdlib. Works offline, no API keys, nothing leave
 
 ## The problem
 
-Coding agents generate completion language as part of their output pattern, regardless of the actual state of the codebase. In the [2026 State of AI survey](https://2026.stateofai.dev/en-US/risks-pain-points/), ~64% of developers named hallucination and unreliability their top pain point, and the specific failure mode everyone has a story about is the agent that says **"✅ All tests pass"** while the suite is red, or quietly edits the *test* until it goes green.
+Coding agents generate completion language as part of their output pattern, regardless of the actual state of the codebase. In the [2026 State of AI survey](https://2026.stateofai.dev/en-US/risks-pain-points/), "Hallucination & inaccuracies" ranked first among pain points: 3,899 of the 6,084 people who answered that question named it, and the specific failure mode everyone has a story about is the agent that says **"All tests pass"** while the suite is red, or quietly edits the *test* until it goes green.
 
-Every existing transcript tool is a *viewer*. This is a *verifier*.
+It reads the session transcript and checks each done-claim against the commands and results the transcript records.
 
 ## What it catches
 
