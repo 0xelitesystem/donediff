@@ -1,19 +1,64 @@
-"""Transcript readers, in the order "auto" tries them. Claude Code is the only one today."""
+"""Transcript readers, in the order "auto" tries them.
+
+How "auto" picks a reader:
+- a target that is a file: the first reader whose detect() is True for it,
+  else Claude Code (an empty or unknown file reads as before);
+- "latest": Claude Code, unless it has no sessions and Codex has some;
+- a session-id prefix: Claude Code when one of its sessions matches, else
+  Codex when one of its sessions matches, else Claude Code (whose "not
+  found" message is shown);
+- `list`: Claude Code, unless it has no sessions and Codex has some.
+"""
 
 from __future__ import annotations
 
-from .base import Reader
-from .claude_code import CLAUDE_CODE
+from pathlib import Path
 
-READERS: tuple[Reader, ...] = (CLAUDE_CODE,)
+from .base import Reader, UnreadableSession
+from .claude_code import CLAUDE_CODE
+from .codex import CODEX
+
+READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
+__all__ = ["AGENT_CHOICES", "READERS", "Reader", "UnreadableSession", "select",
+           "select_for_list"]
 
-def select(agent: str = "auto") -> Reader:
-    """The reader for --agent. "auto" is the first reader until a second one exists."""
-    if agent == "auto":
-        return READERS[0]
+
+def _named(agent: str) -> Reader:
     for reader in READERS:
         if reader.name == agent:
             return reader
     raise ValueError(f"unknown agent {agent!r}; choose from {', '.join(AGENT_CHOICES)}")
+
+
+def _by_sessions(project: str | None) -> Reader:
+    if CLAUDE_CODE.discover(project) or not CODEX.discover(project):
+        return CLAUDE_CODE
+    return CODEX
+
+
+def select(agent: str = "auto", target: str | None = None,
+           project: str | None = None) -> Reader:
+    """The reader for --agent and the audit target (see the module docstring)."""
+    if agent != "auto":
+        return _named(agent)
+    if target is None:
+        return READERS[0]
+    path = Path(target)
+    if path.is_file():
+        return next((r for r in READERS if r.detect(path)), READERS[0])
+    if target == "latest":
+        return _by_sessions(project)
+    for reader in READERS:
+        try:
+            reader.resolve(target, project)
+        except FileNotFoundError:
+            continue
+        return reader
+    return READERS[0]
+
+
+def select_for_list(agent: str = "auto", project: str | None = None) -> Reader:
+    """The reader whose sessions `donediff list` shows."""
+    return _named(agent) if agent != "auto" else _by_sessions(project)

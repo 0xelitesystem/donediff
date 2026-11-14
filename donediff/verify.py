@@ -94,12 +94,13 @@ def _inconclusive(event: Event) -> str | None:
 def _masked_note(event: Event) -> str:
     """Note how the run's result was read when it was not a plain exit code."""
     how = _how_masked(event)
+    truncated = ", output cut at 64 KiB in the log" if event.output_truncated else ""
     if how is not None:
         where = "a pipe" if how.startswith("| ") else f"`{how}`"
-        return f", exit code hidden by {where}, output shows a pass"
+        return f", exit code hidden by {where}, output shows a pass{truncated}"
     if event.background:
-        return ", ran in the background, from its completion notice"
-    return ""
+        return f", ran in the background, from its completion notice{truncated}"
+    return truncated
 
 
 class Timeline:
@@ -257,7 +258,10 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
     run_key, run = last
     if _command_failed(run):
         if run.is_error or (run.exit_code or 0) != 0:
-            reason = f"exit {run.exit_code if run.exit_code is not None else '?'}"
+            reason = (f"exit {run.exit_code}" if run.exit_code is not None
+                      else f"status {run.status}" if run.status else "exit ?")
+        elif run.exit_code is None and run.status:
+            reason = "output reports failures, no exit code in the log"
         else:
             reason = "output reports failures despite exit 0"
         return _found(claim, ctx, Verdict.CONTRADICTED,
@@ -267,6 +271,12 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
     if reason:
         return _found(claim, ctx, Verdict.UNVERIFIED,
                       f"{reason}: `{_short(run.command)}`", run)
+    if run.exit_code is None and run.status:
+        # A reader with no exit code for this run (Codex) gives its status;
+        # no exit code is no proof of success.
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"no exit code in the log (status {run.status}): "
+                      f"`{_short(run.command)}`", run)
     if kind in CHECK_TYPES:
         # Only edits inside the folder the check ran in make it stale: a
         # parallel agent working on another repository does not.

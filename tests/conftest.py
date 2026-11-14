@@ -120,3 +120,9 @@ def stale_transcript(tmp_path):
         assistant_text("Tests pass, we're good to ship."),
     ]
     return write_jsonl(tmp_path / "stale.jsonl", records)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_codex_sessions(monkeypatch, tmp_path_factory):
+    """Point CODEX_HOME at an empty folder so no test sees a real Codex log."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path_factory.mktemp("codex-home")))

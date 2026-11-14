@@ -14,7 +14,7 @@ Options:
   --fail-under N    exit 1 if the donediff score is below N, exit 3 if the
                     session has no score (CI gate)
   --no-color        disable ANSI colors
-  --agent NAME      transcript reader: auto (default) or claude-code
+  --agent NAME      transcript reader: auto (default), claude-code or codex
 
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
@@ -35,7 +35,7 @@ from . import __version__
 from .claims import extract_claims
 from .gaming import detect_gaming
 from .models import AuditResult
-from .readers import AGENT_CHOICES, select
+from .readers import AGENT_CHOICES, UnreadableSession, select, select_for_list
 from .report import render_json, render_markdown, render_terminal
 from .score import score_audit
 from .verify import verify_claims
@@ -60,7 +60,7 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
     `agent` picks the transcript reader (donediff.readers).
     """
     started = time.perf_counter()
-    reader = select(agent)
+    reader = select(agent, target, project)
     path = reader.resolve(target, project)
     session = reader.parse(path)
     session.scan.files = 1
@@ -85,7 +85,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
                            main_only=args.main_only, agent=args.agent)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, UnreadableSession) as exc:
         print(f"donediff: {exc}", file=sys.stderr)
         return 2
 
@@ -111,15 +111,17 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    transcripts = select(args.agent).discover(args.project)[: args.limit]
+    reader = select_for_list(args.agent, args.project)
+    transcripts = reader.discover(args.project)[: args.limit]
     if not transcripts:
-        print("no transcripts found under ~/.claude/projects", file=sys.stderr)
+        print(f"no transcripts found under {reader.location}", file=sys.stderr)
         return 2
     for path in transcripts:
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         size_kb = path.stat().st_size // 1024
-        print(f"{path.stem[:8]}  {mtime:%Y-%m-%d %H:%M}  {size_kb:>6} KB  "
-              f"{path.parent.name}")
+        short_id, project = reader.describe(path)
+        print(f"{short_id}  {mtime:%Y-%m-%d %H:%M}  {size_kb:>6} KB  "
+              f"{project}")
     return 0
 
 

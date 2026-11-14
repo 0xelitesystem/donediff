@@ -54,6 +54,10 @@ class Event:
     output: str = ""
     is_error: bool = False
     exit_code: int | None = None
+    # How the run ended in words, for a reader whose log can lack an exit
+    # code (Codex). With no exit code, a check reads this, never a made-up 0.
+    status: str = ""
+    output_truncated: bool = False  # the log cut the output short (Codex, 64 KiB)
     cwd: str = ""  # working directory the tool call started in
 
     # Ordering across transcripts. `t` is seconds since the epoch: for a
@@ -157,6 +161,7 @@ class Session:
     sources: list[Source] = field(default_factory=list)
     main_only: bool = True
     scan: ScanStats = field(default_factory=ScanStats)
+    unrecognised: int = 0  # log lines a reader could not read, skipped (shown in scope)
 
     def tool_calls(self) -> list[Event]:
         return [e for e in self.events if e.kind is EventKind.TOOL_CALL]

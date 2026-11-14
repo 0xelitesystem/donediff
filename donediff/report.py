@@ -51,7 +51,14 @@ _SEVERITY_STYLE = {
 
 
 def scope_line(session: Session) -> str:
-    """Which transcripts the evidence came from."""
+    """Which transcripts the evidence came from, and lines skipped as unreadable."""
+    line = _scope(session)
+    if session.unrecognised:
+        line += f"; {session.unrecognised} unrecognised record(s) skipped"
+    return line
+
+
+def _scope(session: Session) -> str:
     if session.main_only:
         return "evidence from the main transcript only (--main-only)"
     scan = session.scan
