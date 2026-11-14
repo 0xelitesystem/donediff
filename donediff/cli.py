@@ -14,6 +14,7 @@ Options:
   --fail-under N    exit 1 if the donediff score is below N, exit 3 if the
                     session has no score (CI gate)
   --no-color        disable ANSI colors
+  --agent NAME      transcript reader: auto (default) or claude-code
 
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
@@ -32,10 +33,9 @@ from pathlib import Path
 
 from . import __version__
 from .claims import extract_claims
-from .delegated import attach_sources
 from .gaming import detect_gaming
 from .models import AuditResult
-from .parser import discover_transcripts, parse_transcript, resolve_target
+from .readers import AGENT_CHOICES, select
 from .report import render_json, render_markdown, render_terminal
 from .score import score_audit
 from .verify import verify_claims
@@ -52,22 +52,24 @@ _EXIT_CODES = """exit codes:
 
 
 def run_audit(target: str, project: str | None = None, check_disk: bool = True,
-              main_only: bool = False) -> AuditResult:
+              main_only: bool = False, agent: str = "auto") -> AuditResult:
     """Library entry point: audit a transcript and return the result.
 
     Unless main_only, the session's sub-agent and workflow transcripts are
     discovered next to it and their command results count as evidence.
+    `agent` picks the transcript reader (donediff.readers).
     """
     started = time.perf_counter()
-    path = resolve_target(target, project)
-    session = parse_transcript(path)
+    reader = select(agent)
+    path = reader.resolve(target, project)
+    session = reader.parse(path)
     session.scan.files = 1
     try:
         session.scan.bytes = path.stat().st_size
     except OSError:
         pass
     if not main_only:
-        attach_sources(session)
+        reader.attach_sources(session)
         session.scan.files += len(session.sources)
     session.scan.seconds = time.perf_counter() - started
     claims = extract_claims(session)
@@ -82,7 +84,7 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
 def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
-                           main_only=args.main_only)
+                           main_only=args.main_only, agent=args.agent)
     except FileNotFoundError as exc:
         print(f"donediff: {exc}", file=sys.stderr)
         return 2
@@ -109,7 +111,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    transcripts = discover_transcripts(args.project)[: args.limit]
+    transcripts = select(args.agent).discover(args.project)[: args.limit]
     if not transcripts:
         print("no transcripts found under ~/.claude/projects", file=sys.stderr)
         return 2
@@ -144,11 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="exit 1 if the donediff score is below N, "
                             "exit 3 if the session has no score (for CI)")
     audit.add_argument("--no-color", action="store_true", help="plain output")
+    audit.add_argument("--agent", choices=AGENT_CHOICES, default="auto",
+                       help="which coding agent wrote the transcript (default: auto)")
     audit.set_defaults(func=_cmd_audit)
 
     lst = sub.add_parser("list", help="list recent session transcripts")
     lst.add_argument("--project", help="filter by project folder name")
     lst.add_argument("--limit", type=int, default=15)
+    lst.add_argument("--agent", choices=AGENT_CHOICES, default="auto",
+                     help="which coding agent's sessions to list (default: auto)")
     lst.set_defaults(func=_cmd_list)
 
     return parser

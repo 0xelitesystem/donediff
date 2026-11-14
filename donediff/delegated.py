@@ -39,7 +39,7 @@ from pathlib import Path
 
 from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from .gaming import signals_for_event
-from .models import Event, EventKind, Session, Source
+from .models import CLAUDE_CODE_ACTIONS, FILE_ACTIONS, SHELL, Event, EventKind, Session, Source
 from .parser import (
     background_done, background_id, complete_background, epoch, exit_code_of,
     notice_text,
@@ -49,8 +49,8 @@ from .redact import redact_secrets
 _AGENT_FILE = re.compile(
     r"^(?:\.orphaned-)?agent-([0-9A-Za-z_-]{1,128})\.jsonl(?:\.superseded-[^/\\]+)?$")
 _RUN_DIR = re.compile(r"^wf_[0-9A-Za-z_-]{1,128}$")
-_EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-_SHELL_TOOLS = ("Bash", "PowerShell")
+_EDIT_TOOLS = tuple(n for n, a in CLAUDE_CODE_ACTIONS.items() if a in FILE_ACTIONS)
+_SHELL_TOOLS = tuple(n for n, a in CLAUDE_CODE_ACTIONS.items() if a == SHELL)
 _RESULT_ID = re.compile(rb'"tool_use_id"\s*:\s*"([^"\\]{1,256})"')
 _TOOL_USE = b'"tool_use"'
 _NOTICE = b"task-notification"

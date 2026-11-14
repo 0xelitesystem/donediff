@@ -33,7 +33,7 @@ import re
 from pathlib import Path
 
 from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
-from .models import Delivery, Event, EventKind, Session
+from .models import CLAUDE_CODE_ACTIONS, SHELL, Delivery, Event, EventKind, Session
 
 _EXIT_CODE_RE = re.compile(r"[Ee]xit code:? (\d+)")
 _TS_RE = re.compile(
@@ -46,7 +46,7 @@ _AGENT_ID_RE = re.compile(r"agentId:\s*([0-9A-Za-z_-]{4,64})")
 _TAG_RE = {tag: re.compile(rf"<{tag}>([^<]{{1,200}})</{tag}>")
            for tag in ("task-id", "tool-use-id", "status")}
 _DONE_STATUSES = ("completed", "failed", "killed", "error", "stopped", "cancelled")
-_SHELL_TOOLS = ("Bash", "PowerShell")
+_SHELL_TOOLS = tuple(n for n, a in CLAUDE_CODE_ACTIONS.items() if a == SHELL)
 _BACKGROUND_TEXT = re.compile(
     r"^\s*Command running in background|moved to the background", re.IGNORECASE)
 _BACKGROUND_ID = re.compile(r"\bID:?\s*([0-9A-Za-z_-]{3,64})")

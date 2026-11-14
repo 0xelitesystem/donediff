@@ -43,7 +43,7 @@ from pathlib import Path
 from .evidence import CHECK_TYPES, commit_subjects, masked_exit, stage_types
 from .gitstate import GitError, GitRepo
 from .models import (
-    Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
+    EDIT, NOTEBOOK_EDIT, WRITE, Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
 )
 from .parser import epoch
 from .redact import redact_secrets
@@ -330,7 +330,7 @@ def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Ev
     name = Path(claim.detail).name
     return [
         e for e in timeline.writes_before(ctx.key, ctx.restrict)
-        if e.tool_name in ("Write", "Edit", "NotebookEdit")
+        if e.tool_action in (WRITE, EDIT, NOTEBOOK_EDIT)
         and Path(e.file_path).name == name
     ]
 

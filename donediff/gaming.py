@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 from .evidence import masking
-from .models import Event, EventKind, GamingSeverity, GamingSignal, Session
+from .models import EDIT, MULTI_EDIT, WRITE, Event, EventKind, GamingSeverity, GamingSignal, Session
 from .redact import redact_secrets
 
 _TEST_FILE = re.compile(
@@ -64,10 +64,10 @@ def _is_test_path(path: str) -> bool:
 
 def _edit_pairs(event: Event) -> list[tuple[str, str]]:
     """(old, new) string pairs for an edit-shaped tool call."""
-    if event.tool_name == "Edit":
+    if event.tool_action == EDIT:
         return [(str(event.tool_input.get("old_string", "")),
                  str(event.tool_input.get("new_string", "")))]
-    if event.tool_name == "MultiEdit":
+    if event.tool_action == MULTI_EDIT:
         edits = event.tool_input.get("edits")
         if isinstance(edits, list):
             return [(str(e.get("old_string", "")), str(e.get("new_string", "")))
@@ -127,7 +127,7 @@ def signals_for_event(event: Event, source: str = "main") -> list[GamingSignal]:
             add("added_skip", GamingSeverity.MEDIUM,
                 f"{name}: skip/xfail marker added to a test")
 
-    if event.tool_name == "Write":
+    if event.tool_action == WRITE:
         content = str(event.tool_input.get("content", ""))
         if len(content.strip()) == 0:
             add("emptied_test_file", GamingSeverity.HIGH,

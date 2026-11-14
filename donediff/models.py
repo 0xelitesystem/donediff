@@ -19,6 +19,21 @@ class EventKind(enum.Enum):
     TOOL_CALL = "tool_call"
 
 
+# What a tool call does, in words every reader shares. The checks read these,
+# never an agent's own tool names. A reader sets Event.action and puts the
+# inputs under the shared keys: "command" (shell), "file_path" (write and the
+# edits), "content" (write), "old_string"/"new_string" (edit) or "edits", a list
+# of those pairs (multi_edit). With no action set, Claude Code's names apply
+# (the first reader's, and what hand-built test events use).
+SHELL, WRITE, EDIT, MULTI_EDIT, NOTEBOOK_EDIT, OTHER = (
+    "shell", "write", "edit", "multi_edit", "notebook_edit", "other")
+CLAUDE_CODE_ACTIONS = {
+    "Bash": SHELL, "PowerShell": SHELL, "Write": WRITE, "Edit": EDIT,
+    "MultiEdit": MULTI_EDIT, "NotebookEdit": NOTEBOOK_EDIT,
+}
+FILE_ACTIONS = (WRITE, EDIT, MULTI_EDIT, NOTEBOOK_EDIT)
+
+
 @dataclass
 class Event:
     """One thing that happened in the session, in transcript order."""
@@ -32,7 +47,8 @@ class Event:
     text: str = ""
 
     # TOOL_CALL events
-    tool_name: str = ""
+    tool_name: str = ""  # the agent's own name for the tool, for display
+    action: str = ""  # shared action (see CLAUDE_CODE_ACTIONS); empty = from tool_name
     tool_id: str = ""
     tool_input: dict = field(default_factory=dict)
     output: str = ""
@@ -56,9 +72,14 @@ class Event:
     check_types: frozenset = frozenset()  # ClaimTypes this command can back
 
     @property
+    def tool_action(self) -> str:
+        """The shared action: the reader's, else from Claude Code's tool name."""
+        return self.action or CLAUDE_CODE_ACTIONS.get(self.tool_name, OTHER)
+
+    @property
     def command(self) -> str:
-        """Shell command for Bash/PowerShell calls, else empty."""
-        if self.tool_name in ("Bash", "PowerShell"):
+        """Shell command for shell calls, else empty."""
+        if self.tool_action == SHELL:
             return str(self.tool_input.get("command", ""))
         return ""
 
@@ -68,7 +89,7 @@ class Event:
         return str(self.tool_input.get("file_path", ""))
 
     def is_file_edit(self) -> bool:
-        return self.tool_name in ("Edit", "Write", "MultiEdit", "NotebookEdit")
+        return self.tool_action in FILE_ACTIONS
 
 
 @dataclass
