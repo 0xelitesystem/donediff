@@ -3,7 +3,9 @@ and nothing that points at a network or device path is ever touched."""
 
 from __future__ import annotations
 
+import functools
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -99,6 +101,18 @@ def test_disk_check_never_touches_a_network_path(tmp_path, monkeypatch):
     assert "network or device path" in finding.evidence
 
 
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+
+
+@pytest.fixture
+def refuse(tmp_path):
+    """The network-path scan with its config files parsed by git (outside the repository)."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    reader = functools.partial(gitstate.read_config_file, shutil.which("git"), str(scratch))
+    return lambda project: gitstate._refuse_network_repository(project, reader)
+
+
 def make_dotgit(project: Path, config: str) -> Path:
     gitdir = project / ".git"
     gitdir.mkdir(parents=True)
@@ -106,32 +120,45 @@ def make_dotgit(project: Path, config: str) -> Path:
     return gitdir
 
 
-def test_network_path_in_an_included_config_is_refused(tmp_path):
+@needs_git
+def test_network_path_in_an_included_config_is_refused(tmp_path, refuse):
     gitdir = make_dotgit(tmp_path / "proj", "[core]\n\tbare = false\n[include]\n\tpath = extra.cfg\n")
     (gitdir / "extra.cfg").write_text("[core]\n\tworktree = //host/share/x\n", encoding="utf-8")
     with pytest.raises(gitstate.GitError, match="network or device path"):
-        gitstate._refuse_network_repository(tmp_path / "proj")
+        refuse(tmp_path / "proj")
 
 
-def test_network_path_in_an_includeif_chain_is_refused(tmp_path):
+@needs_git
+def test_network_path_in_an_includeif_chain_is_refused(tmp_path, refuse):
     gitdir = make_dotgit(tmp_path / "proj", '[includeIf "gitdir:**"]\n\tpath = one.cfg\n')
     (gitdir / "one.cfg").write_text("[include]\n\tpath = two.cfg\n", encoding="utf-8")
-    (gitdir / "two.cfg").write_text("[remote \"o\"]\n\turl = \\\\host\\share\\repo\n", encoding="utf-8")
+    # git reads the escaped value as \\host\share\repo
+    (gitdir / "two.cfg").write_text('[remote "o"]\n\turl = ' + r'"\\\\host\\share\\repo"' + "\n",
+                                    encoding="utf-8")
     with pytest.raises(gitstate.GitError, match="network or device path"):
-        gitstate._refuse_network_repository(tmp_path / "proj")
+        refuse(tmp_path / "proj")
 
 
-def test_an_include_loop_ends_and_submodule_paths_are_not_followed(tmp_path):
+@needs_git
+def test_a_config_git_cannot_parse_is_refused(tmp_path, refuse):
+    make_dotgit(tmp_path / "proj", "[core\n\tworktree = x\n")
+    with pytest.raises(gitstate.GitError, match="could not be read"):
+        refuse(tmp_path / "proj")
+
+
+@needs_git
+def test_an_include_loop_ends_and_submodule_paths_are_not_followed(tmp_path, refuse):
     submodules = "".join(f'[submodule "m{i}"]\n\tpath = lib/m{i}\n' for i in range(15))
     gitdir = make_dotgit(tmp_path / "proj", submodules + "[include]\n\tpath = a.cfg\n")
     (gitdir / "a.cfg").write_text("[include]\n\tpath = b.cfg\n", encoding="utf-8")
     (gitdir / "b.cfg").write_text("[include]\n\tpath = a.cfg\n", encoding="utf-8")
-    gitstate._refuse_network_repository(tmp_path / "proj")  # no error: nothing remote, loop ends
+    refuse(tmp_path / "proj")  # no error: nothing remote, loop ends
 
 
-def test_too_many_included_files_are_refused(tmp_path):
+@needs_git
+def test_too_many_included_files_are_refused(tmp_path, refuse):
     gitdir = make_dotgit(tmp_path / "proj", "[include]\n\tpath = c0.cfg\n")
     for i in range(12):
         (gitdir / f"c{i}.cfg").write_text(f"[include]\n\tpath = c{i + 1}.cfg\n", encoding="utf-8")
     with pytest.raises(gitstate.GitError, match="too many files"):
-        gitstate._refuse_network_repository(tmp_path / "proj")
+        refuse(tmp_path / "proj")

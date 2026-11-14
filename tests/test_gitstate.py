@@ -306,11 +306,21 @@ def test_network_project_path_is_never_touched(tmp_path, monkeypatch):
 
 
 def _refuse_popen(monkeypatch):
-    def refuse(*a, **k):
-        raise AssertionError("git started for a repository that points at the network")
+    """Fail on any git call on the repository; allow only `config --file <f> --no-includes`
+    run outside it (the parse of one config file), and return what was run."""
+    real, allowed = subprocess.Popen, []
+
+    def refuse(argv, **kwargs):
+        if "-C" in argv or "--file" not in argv or "--no-includes" not in argv:
+            raise AssertionError("git started for a repository that points at the network")
+        assert kwargs.get("cwd") and kwargs["env"].get("GIT_CEILING_DIRECTORIES")
+        allowed.append(list(argv))
+        return real(argv, **kwargs)
     monkeypatch.setattr(gitstate.subprocess, "Popen", refuse)
+    return allowed
 
 
+@needs_git
 @pytest.mark.parametrize("setup", ["gitfile", "alternates", "config_include", "commondir"])
 def test_repository_pointing_at_a_network_path_is_never_run(tmp_path, monkeypatch, setup):
     proj = tmp_path / "proj"
@@ -335,6 +345,62 @@ def test_repository_pointing_at_a_network_path_is_never_run(tmp_path, monkeypatc
     assert finding.verdict is Verdict.VERIFIED  # the transcript's own verdict
     assert "git state not checked (" in finding.evidence
     assert "network or device path)" in finding.evidence
+
+
+# SEC-192: the five ways git spells a network path that a line-by-line text scan misses.
+# Each is parsed by git itself (`config --file --no-includes`, outside the repository) or
+# walked here; git is never started on the repository.
+_HOST = "//h.invalid/s"
+
+
+@needs_git
+@pytest.mark.parametrize("form", ["include_on_header_line", "backslash_continuation",
+                                  "joined_quotes", "nested_alternates", "config_worktree"])
+def test_network_path_forms_git_reads_are_refused(tmp_path, monkeypatch, form):
+    proj = tmp_path / "proj"
+    dotgit = proj / ".git"
+    (dotgit / "objects" / "info").mkdir(parents=True)
+    config = dotgit / "config"
+    if form == "include_on_header_line":
+        config.write_text(f"[include] path = {_HOST}/x\n", encoding="utf-8")
+    elif form == "backslash_continuation":
+        config.write_text(f"[core]\n\tworktree = \\\n{_HOST}\n", encoding="utf-8", newline="\n")
+    elif form == "joined_quotes":
+        config.write_text('[core]\n\tworktree = "/""/h.invalid/s"\n', encoding="utf-8")
+    elif form == "nested_alternates":
+        (dotgit / "objects" / "info" / "alternates").write_text("../../alt/objects\n",
+                                                                 encoding="utf-8")
+        alt = proj / "alt" / "objects" / "info"
+        alt.mkdir(parents=True)
+        (alt / "alternates").write_text(f"{_HOST}/objects\n", encoding="utf-8")
+    else:
+        config.write_text("[core]\n\trepositoryformatversion = 1\n"
+                          "[extensions]\n\tworktreeConfig = true\n", encoding="utf-8")
+        (dotgit / "config.worktree").write_text(f"[core]\n\tworktree = {_HOST}\n",
+                                                encoding="utf-8")
+    allowed = _refuse_popen(monkeypatch)
+    repo = gitstate.GitRepo(str(proj))
+    assert not repo.available
+    assert "network or device path" in repo.reason
+    with pytest.raises(gitstate.GitError):
+        repo.status()
+    for argv in allowed:  # only local config files were parsed
+        parsed = Path(argv[argv.index("--file") + 1]).resolve()
+        assert parsed.is_relative_to(dotgit.resolve()), parsed
+
+
+@needs_git
+def test_alternates_loop_is_refused(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    info = proj / ".git" / "objects" / "info"
+    info.mkdir(parents=True)
+    (info / "alternates").write_text("../../alt/objects\n", encoding="utf-8")
+    alt = proj / "alt" / "objects" / "info"
+    alt.mkdir(parents=True)
+    (alt / "alternates").write_text("../../.git/objects\n", encoding="utf-8")
+    _refuse_popen(monkeypatch)
+    repo = gitstate.GitRepo(str(proj))
+    assert repo.reason == "repository alternates loop"
 
 
 def test_no_disk_check_never_starts_git(tmp_path, monkeypatch):
@@ -397,7 +463,11 @@ def test_every_git_call_is_hardened_and_read_only(tmp_path, monkeypatch):
     assert calls
     for argv, kwargs in calls:
         assert isinstance(argv, list) and kwargs.get("shell") is False
-        assert argv[1:4] == ["-C", str(repo.resolve()), "--no-pager"]
+        if "--file" in argv:  # a config file parsed outside the repository
+            assert "-C" not in argv and argv[1] == "--no-pager" and "--no-includes" in argv
+            assert kwargs["cwd"] and kwargs["env"]["GIT_CEILING_DIRECTORIES"]
+        else:
+            assert argv[1:4] == ["-C", str(repo.resolve()), "--no-pager"]
         assert "core.fsmonitor=false" in argv and "diff.external=" in argv
         assert "protocol.allow=never" in argv and "log.showSignature=false" in argv
         assert any(a.startswith("core.hooksPath=") for a in argv)
@@ -469,6 +539,58 @@ def test_hostile_repository_never_runs_its_code(tmp_path):
         assert verdicts[claim_type].verdict is Verdict.VERIFIED, verdicts[claim_type]
         assert verdicts[claim_type].evidence.endswith("[in git]")
     assert "in session commit" in verdicts[ClaimType.FILE_CREATED].evidence
+
+
+@needs_git
+def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
+    """SEC-191: `-c filter.a=b.clean=` is split by git at the first "=", so the filter
+    stays live. The repository is refused before any later git call."""
+    repo = make_repo(tmp_path)
+    (repo / ".gitattributes").write_text("f.txt filter=a=b\n", encoding="utf-8")
+    commit_file(repo, "f.txt", "Add f")
+    marker = tmp_path / "marker.txt"
+    run = f"sh '{_evil_script(tmp_path, marker).as_posix()}'"
+    with open(repo / ".git" / "config", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(f'[filter "a=b"]\n\tclean = {run}\n')
+    stat = (repo / "f.txt").stat()  # same content, new time: git must run the filter to compare
+    os.utime(repo / "f.txt", (stat.st_atime + 100, stat.st_mtime + 100))
+    index = (repo / ".git" / "index").read_bytes()
+
+    # Control: plain git runs the filter, so the setup is real.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                   capture_output=True, env=env)
+    assert marker.exists(), "the a=b filter did not fire under plain git"
+    marker.unlink()
+    (repo / ".git" / "index").write_bytes(index)
+
+    found = gitstate.GitRepo(str(repo))
+    assert found.reason == "repository names a filter that cannot be turned off"
+    with pytest.raises(gitstate.GitError):
+        found.status()
+    assert not marker.exists()
+
+
+@needs_git
+def test_filter_overrides_also_travel_in_the_environment(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    git(repo, "config", "filter.evil.clean", "false")
+    envs = []
+    real = subprocess.Popen
+
+    def spy(argv, **kwargs):
+        envs.append(kwargs["env"])
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(gitstate.subprocess, "Popen", spy)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        found.status()
+    env = envs[-1]
+    pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+             for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert pairs["filter.evil.clean"] == "" and pairs["filter.evil.process"] == ""
+    assert pairs["filter.evil.required"] == "false"
 
 
 @needs_git

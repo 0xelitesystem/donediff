@@ -9,8 +9,12 @@ and attributes may have been written to run code. So every call:
   hooks (pointed at an empty folder), external diff, signature checks
   (gpg), every clean/smudge/process filter the repository names, and
   every network transport (`protocol.allow=never`, no lazy fetch);
+  filter overrides also go through GIT_CONFIG_COUNT, and a filter name
+  that cannot be overridden (one with "=") makes the repository refused;
 - runs a read-only command: rev-parse, config --get-regexp, log,
-  show --name-only, status --porcelain, branch -r, cat-file -e;
+  show --name-only, status --porcelain, branch -r, cat-file -e, and
+  `config --file <f> --no-includes --list` outside the repository to
+  parse its config files before git is run on it;
 - has a timeout and a cap on how much output is read;
 - runs without a terminal prompt, pager or editor, and with
   GIT_OPTIONAL_LOCKS=0 so `status` does not rewrite the index.
@@ -90,20 +94,56 @@ def _read_small(path: Path) -> str:
         return ""
 
 
-def _refuse_network_repository(project: Path) -> None:
+MAX_CONFIG_FILES = 10  # config files read per git directory, includes counted
+MAX_ALTERNATE_DEPTH = 5  # git follows nested alternates this deep
+
+
+def _local_target(path: Path) -> Path:
+    """`path`, refused when it, or the link it is, names a network or device path."""
+    if is_remote_path(path):
+        raise GitError("repository points at a network or device path")
+    try:
+        if os.path.islink(path) and is_remote_path(os.readlink(path)):
+            raise GitError("repository points at a network or device path")
+    except OSError:
+        pass
+    return path
+
+
+def _remote_value(value: str) -> bool:
+    """A config value, or any line or trimmed form of it, is a network or device path."""
+    return any(is_remote_path(part) or is_remote_path(part.strip())
+               for part in (value, *value.splitlines()))
+
+
+def _unquote_alternate(line: str) -> str:
+    """An alternates entry as git reads it (C-style quotes when it starts with ")."""
+    if not line.startswith('"'):
+        return line
+    body = line[1:-1] if line.endswith('"') and len(line) > 1 else line[1:]
+    return re.sub(r"\\([0-7]{1,3}|.)",
+                  lambda m: chr(int(m.group(1), 8)) if m.group(1)[0] in "01234567"
+                  else {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), body)
+
+
+def _refuse_network_repository(project: Path, read_config) -> None:
     """Refuse a repository whose files point git at a network or device path.
 
     A `.git` file (`gitdir: //host/share`), a worktree's `commondir`, an
-    object `alternates` list or any value in the repository's config
-    (`include.path`, `core.worktree`) can send git to \\\\host\\share, and on
-    Windows touching that sends the user's credentials to the host. These
-    are read as plain text before git starts; git is not run on a hit.
+    object `alternates` list (and the alternates' own alternates) or any
+    value in the repository's config, `config.worktree` and every file
+    they include (`include.path`, `core.worktree`) can send git to
+    \\\\host\\share, and on Windows touching that sends the user's
+    credentials to the host. Config files are parsed by git itself
+    (`read_config`: `git config --file <f> --no-includes --list`, run
+    outside the repository), so every way git spells a value is seen;
+    includes are followed here. Git is not run on the repository on a hit.
     """
     dotgit = next((d / ".git" for d in (project, *project.parents)
                    if os.path.lexists(d / ".git")), None)
     if dotgit is None:
         return  # git will say it is not a work tree
-    gitdirs = [dotgit]
+    gitdirs = [_local_target(dotgit)]
     if dotgit.is_file():
         match = re.match(r"gitdir:\s*(.+)", _read_small(dotgit).strip())
         if not match:
@@ -111,42 +151,138 @@ def _refuse_network_repository(project: Path) -> None:
         target = match.group(1).strip()
         if is_remote_path(target):
             raise GitError("network or device path")
-        gitdirs = [dotgit.parent / _windows_path(target)]
-    common = _read_small(gitdirs[0] / "commondir").strip()
+        gitdirs = [_local_target(dotgit.parent / _windows_path(target))]
+    common = _read_small(_local_target(gitdirs[0] / "commondir")).strip()
     if common:
         if is_remote_path(common):
             raise GitError("network or device path")
-        gitdirs.append(gitdirs[0] / common)
+        gitdirs.append(_local_target(gitdirs[0] / _windows_path(common)))
     for gitdir in gitdirs:
-        alternates = _read_small(gitdir / "objects" / "info" / "alternates")
-        values = [line.strip() for line in alternates.splitlines()]
-        # The config and every local file it includes ([include] / [includeIf] path = ...),
-        # followed as plain text, so an included file cannot point git at a network path either.
-        pending, seen = [gitdir / "config"], set()
-        while pending and len(seen) < 10:
-            config = pending.pop()
+        _refuse_network_alternates(gitdir / "objects")
+        # config.worktree is read whatever extensions.worktreeConfig says: reading costs nothing.
+        pending = [gitdir / "config.worktree", gitdir / "config"]
+        seen: set[str] = set()
+        while pending:
+            config = _local_target(pending.pop())
             key = os.path.normcase(os.path.abspath(config))
-            if key in seen:
+            if key in seen or not config.is_file():
                 continue
+            if len(seen) >= MAX_CONFIG_FILES:
+                raise GitError("repository config includes too many files")
             seen.add(key)
-            section = ""
-            for line in _read_small(config).splitlines():
-                stripped = line.strip()
-                if stripped.startswith("["):
-                    section = stripped[1:].split("]", 1)[0].split(None, 1)[0].strip("\"").lower()
-                    continue
-                if "=" not in line:
-                    continue
-                name, value = (part.strip() for part in line.split("=", 1))
-                value = value.strip("\"'")
-                values.append(value)
-                if section in ("include", "includeif") and name.lower() == "path" and value \
-                        and not is_remote_path(value) and not value.startswith("~"):
-                    pending.append(config.parent / _windows_path(value))
-        if pending:
-            raise GitError("repository config includes too many files")
-        if any(is_remote_path(v) for v in values if v):
-            raise GitError("repository points at a network or device path")
+            for name, value in read_config(config):
+                if _remote_value(value):
+                    raise GitError("repository points at a network or device path")
+                name = name.lower()
+                if value and (name == "include.path" or (name.startswith("includeif.")
+                                                         and name.endswith(".path"))):
+                    target = os.path.expanduser(value) if value.startswith("~") else value
+                    pending.append(config.parent / _windows_path(target))
+
+
+def _refuse_network_alternates(objects: Path) -> None:
+    """Walk `objects/info/alternates` the way git does, nested, with a loop guard."""
+    queue: list[tuple[Path, tuple[str, ...]]] = [(objects, ())]
+    seen: set[str] = set()
+    while queue:
+        directory, chain = queue.pop()
+        key = os.path.normcase(os.path.abspath(directory))
+        if key in chain:
+            raise GitError("repository alternates loop")
+        if key in seen:
+            continue
+        seen.add(key)
+        chain, depth = (*chain, key), len(chain)
+        text = _read_small(_local_target(directory / "info" / "alternates"))
+        for raw in text.splitlines():
+            entry = _unquote_alternate(raw.strip())
+            if not entry or entry.startswith("#"):
+                continue
+            if is_remote_path(entry):
+                raise GitError("repository points at a network or device path")
+            if depth + 1 > MAX_ALTERNATE_DEPTH:
+                raise GitError("repository alternates nest too deep")
+            queue.append((_local_target(directory / _windows_path(entry)), chain))
+
+
+def _hardening_args(hooks: str) -> list[str]:
+    """The -c settings every git call carries (filters are added per repository)."""
+    return [
+        "-c", "core.fsmonitor=false",
+        "-c", f"core.hooksPath={hooks}",
+        "-c", "diff.external=",
+        "-c", "log.showSignature=false",
+        "-c", "protocol.allow=never",
+    ]
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """Kill and reap, so no git process is left holding a folder we remove."""
+    proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run_git(argv: list[str], env: dict[str, str], cwd: str | None) -> tuple[int, str]:
+    """Run one git argv (never a shell) with the timeout and output cap."""
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=env, shell=False, cwd=cwd,
+            creationflags=_NO_WINDOW,
+        )
+    except OSError:
+        raise GitError("git could not start") from None
+    deadline = time.monotonic() + TIMEOUT
+    box: dict[str, bytes] = {}
+
+    def read() -> None:
+        box["data"] = proc.stdout.read(OUTPUT_CAP + 1)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(TIMEOUT)
+    try:
+        if reader.is_alive():
+            _stop(proc)
+            raise GitError("git timed out")
+        data = box.get("data", b"")
+        if len(data) > OUTPUT_CAP:
+            _stop(proc)
+            raise GitError("git output too large")
+        try:
+            code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            raise GitError("git timed out") from None
+    finally:
+        proc.stdout.close()
+    return code, data.decode("utf-8", errors="replace")
+
+
+def read_config_file(git: str, scratch: str, config: Path) -> list[tuple[str, str]]:
+    """(name, value) pairs of one config file, parsed by git, includes not followed.
+
+    `git config --file <f> --no-includes --list -z`, run in `scratch` (an empty
+    folder) with repository discovery stopped above it and the same argv and
+    environment hardening as every other call, so only this one local file
+    is read and no repository is opened.
+    """
+    env = _environment()
+    env["GIT_CEILING_DIRECTORIES"] = str(Path(scratch).parent)
+    argv = [git, "--no-pager", *_hardening_args(scratch),
+            "config", "--file", str(config), "--no-includes", "--list", "-z"]
+    code, out = _run_git(argv, env, scratch)
+    if code != 0:
+        raise GitError("repository config could not be read")
+    pairs = []
+    for entry in out.split("\0"):
+        if entry:
+            name, _, value = entry.partition("\n")
+            pairs.append((name, value))
+    return pairs
 
 
 class GitRepo:
@@ -200,11 +336,12 @@ class GitRepo:
         if not path.is_dir():
             raise GitError("project directory not found")
         self.project = str(path.resolve())
-        _refuse_network_repository(Path(self.project))
         self._git = shutil.which("git") or ""
         if not self._git:
             raise GitError("git not found")
-        self._hooks = tempfile.TemporaryDirectory(prefix="donediff-nohooks-")
+        self._hooks = tempfile.TemporaryDirectory(prefix="donediff-nohooks-",
+                                                  ignore_cleanup_errors=True)
+        _refuse_network_repository(Path(self.project), self._read_config_file)
         code, out = self._run(["rev-parse", "--is-inside-work-tree", "--show-toplevel"],
                               check=False)
         lines = out.splitlines()
@@ -212,68 +349,58 @@ class GitRepo:
             raise GitError("not a git work tree")
         self.toplevel = str(Path(_windows_path(lines[1].strip())).resolve())
         # Names of every filter the config defines, so each can be turned off.
-        code, out = self._run(["config", "--name-only", "--get-regexp", r"^filter\."],
+        code, out = self._run(["config", "-z", "--name-only", "--get-regexp", r"^filter\."],
                               check=False)
         names = set()
-        for line in out.splitlines():
-            parts = line.strip().split(".")
-            if len(parts) >= 3:
-                names.add(".".join(parts[1:-1]))
+        for entry in out.split("\0"):
+            first, _, rest = entry.strip("\n").partition(".")
+            if first.lower() == "filter" and "." in rest:
+                names.add(rest.rsplit(".", 1)[0])
+        # git splits `-c key=value` at the first "=", so a filter named "a=b" cannot be
+        # turned off with -c, and older git ignores the GIT_CONFIG_COUNT form. Refuse it.
+        if any("=" in name or "\n" in name or "\0" in name for name in names):
+            raise GitError("repository names a filter that cannot be turned off")
         self._filters = sorted(names)
         code, _ = self._run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], check=False)
         self._has_head = code == 0
 
+    def _read_config_file(self, config: Path) -> list[tuple[str, str]]:
+        if self._hooks is None:
+            raise GitError("git could not start")
+        return read_config_file(self._git, self._hooks.name, config)
+
     def _config_args(self) -> list[str]:
         hooks = self._hooks.name if self._hooks is not None else os.devnull
-        args = [
-            "-c", "core.fsmonitor=false",
-            "-c", f"core.hooksPath={hooks}",
-            "-c", "diff.external=",
-            "-c", "log.showSignature=false",
-            "-c", "protocol.allow=never",
-        ]
+        args = _hardening_args(hooks)
         for name in self._filters:
             for key in ("clean", "smudge", "process"):
                 args += ["-c", f"filter.{name}.{key}="]
             args += ["-c", f"filter.{name}.required=false"]
         return args
 
+    def _filter_environment(self) -> dict[str, str]:
+        """The filter overrides again as GIT_CONFIG_COUNT/KEY/VALUE (git 2.31+):
+        key and value travel apart, so no name can be split into another key."""
+        pairs = [(f"filter.{name}.{key}", "") for name in self._filters
+                 for key in ("clean", "smudge", "process")]
+        pairs += [(f"filter.{name}.required", "false") for name in self._filters]
+        env = {"GIT_CONFIG_COUNT": str(len(pairs))} if pairs else {}
+        for i, (key, value) in enumerate(pairs):
+            env[f"GIT_CONFIG_KEY_{i}"] = key
+            env[f"GIT_CONFIG_VALUE_{i}"] = value
+        return env
+
     def _run(self, args: list[str], check: bool = True) -> tuple[int, str]:
+        if self.reason or not self._git:
+            # A repository refused at open is never run again, by any later call.
+            raise GitError(self.reason or "git not found")
+        env = _environment()
+        env.update(self._filter_environment())
         argv = [self._git, "-C", self.project, "--no-pager", *self._config_args(), *args]
-        try:
-            proc = subprocess.Popen(
-                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, env=_environment(), shell=False,
-                creationflags=_NO_WINDOW,
-            )
-        except OSError:
-            raise GitError("git could not start") from None
-        deadline = time.monotonic() + TIMEOUT
-        box: dict[str, bytes] = {}
-
-        def read() -> None:
-            box["data"] = proc.stdout.read(OUTPUT_CAP + 1)
-
-        reader = threading.Thread(target=read, daemon=True)
-        reader.start()
-        reader.join(TIMEOUT)
-        if reader.is_alive():
-            proc.kill()
-            raise GitError("git timed out")
-        data = box.get("data", b"")
-        if len(data) > OUTPUT_CAP:
-            proc.kill()
-            raise GitError("git output too large")
-        try:
-            code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise GitError("git timed out") from None
-        finally:
-            proc.stdout.close()
+        code, out = _run_git(argv, env, None)
         if check and code != 0:
             raise GitError(f"git {args[0]} failed")
-        return code, data.decode("utf-8", errors="replace")
+        return code, out
 
     # -- what the checks read -----------------------------------------------
 
