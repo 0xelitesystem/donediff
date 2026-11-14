@@ -11,9 +11,9 @@ import json
 import time
 import tracemalloc
 
-from agent_receipts import delegated
-from agent_receipts.cli import run_audit
-from agent_receipts.models import Verdict
+from donediff import delegated
+from donediff.cli import run_audit
+from donediff.models import Verdict
 
 FILLER = "ordinary tool output the auditor never keeps\n" * 400  # ~18 KB
 

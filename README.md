@@ -1,8 +1,11 @@
-# agent-receipts
+# donediff
 
-> Your coding agent says "all tests pass." **Prove it.**
+> Prove what your agent actually did.
 
-`receipts` audits AI coding agent sessions and verifies every claim the agent made against what it *actually did*. It parses the session transcript, extracts checkable claims ("tests pass", "I committed the changes", "created `cache.py`"), and cross-checks each one against ground truth: the real exit codes of the commands the agent ran, the real edits it made, and the real state of your filesystem.
+Formerly agent-receipts. The old repository address redirects here, and the old `receipts` command still works for
+one release (it prints a notice; use `donediff`).
+
+`donediff` audits AI coding agent sessions and verifies every claim the agent made against what it *actually did*. It parses the session transcript, extracts checkable claims ("tests pass", "I committed the changes", "created `cache.py`"), and cross-checks each one against ground truth: the real exit codes of the commands the agent ran, the real edits it made, and the real state of your filesystem.
 
 Since v0.2 that includes the work the agent delegated: the transcripts of its sub-agents and workflow agents are read too, and every piece of evidence names where it ran.
 
@@ -17,11 +20,11 @@ It reads the session transcript and checks each done-claim against the commands 
 ## What it catches
 
 ```
-  agent-receipts, claims vs. reality
+  donediff, claims vs. reality
   session demo-session  -  7 events  -  /home/dev/acme-api
   evidence from the main transcript; no sub-agent or workflow transcripts found
 
-  RECEIPTS SCORE  0/100 (F)
+  DONEDIFF SCORE  0/100 (F)
   1 verified  -  0 stale  -  0 unverified  -  2 contradicted  -  3 gaming signal(s)
 
   CLAIMS
@@ -41,13 +44,13 @@ It reads the session transcript and checks each done-claim against the commands 
 That's a real audit of [`examples/demo-session.jsonl`](examples/demo-session.jsonl), an agent that hit 2 failing tests, weakened an assertion instead of fixing the code, masked the remaining failure with `|| true`, committed with `--no-verify`, and reported "All tests pass." Run it yourself:
 
 ```bash
-receipts audit examples/demo-session.jsonl
+donediff audit examples/demo-session.jsonl
 ```
 
 ## Install
 
 ```bash
-pip install git+https://github.com/0xelitesystem/agent-receipts
+pip install git+https://github.com/0xelitesystem/donediff
 ```
 
 Python 3.10 or newer. No dependencies.
@@ -56,29 +59,29 @@ Python 3.10 or newer. No dependencies.
 
 ```bash
 # Audit your most recent Claude Code session
-receipts audit latest
+donediff audit latest
 
 # Audit a specific session by id prefix, or any transcript path
-receipts audit 8dcbd9b2
-receipts audit ~/.claude/projects/<project>/<session>.jsonl
+donediff audit 8dcbd9b2
+donediff audit ~/.claude/projects/<project>/<session>.jsonl
 
 # List recent sessions across all projects
-receipts list
+donediff list
 
 # Machine-readable output / Markdown report
-receipts audit latest --json
-receipts audit latest --md report.md
+donediff audit latest --json
+donediff audit latest --md report.md
 
 # CI gate: fail the pipeline when the agent didn't back up its claims
-receipts audit latest --fail-under 80
+donediff audit latest --fail-under 80
 
 # Only the main transcript, ignoring sub-agents and workflows (v0.1 behaviour)
-receipts audit latest --main-only
+donediff audit latest --main-only
 ```
 
 ## Sessions that delegate
 
-A session that hands work to sub-agents or workflows keeps their transcripts next to its own (`<session>/subagents/...`). `receipts audit` finds them automatically, and a test run inside any of them counts as evidence, with the evidence line naming where it ran:
+A session that hands work to sub-agents or workflows keeps their transcripts next to its own (`<session>/subagents/...`). `donediff audit` finds them automatically, and a test run inside any of them counts as evidence, with the evidence line naming where it ran:
 
 ```
   ✓ VERIFIED     "The build is clean and all 900 tests pass."
@@ -90,8 +93,8 @@ A session that hands work to sub-agents or workflows keeps their transcripts nex
 Ordering stays honest: delegated evidence counts only if its result came back before the claim and the agent had finished before the claim. A claim that only passes on an agent's report, with no command result behind it anywhere, stays UNVERIFIED with its own reason. Try it on the synthetic fixtures:
 
 ```bash
-receipts audit tests/fixtures/sessions/proj/s2-wf.jsonl
-receipts audit tests/fixtures/sessions/proj/s4-relay.jsonl
+donediff audit tests/fixtures/sessions/proj/s2-wf.jsonl
+donediff audit tests/fixtures/sessions/proj/s4-relay.jsonl
 ```
 
 The details (layout, ordering rules, relayed claims, performance numbers) are in [docs/delegation.md](docs/delegation.md).
@@ -141,7 +144,7 @@ One number for how much of what the agent said it backed up: claims weighted by 
 
 - **Claude Code**, reads the JSONL transcripts in `~/.claude/projects/` directly. No setup.
 
-The parser is isolated in [`agent_receipts/parser.py`](agent_receipts/parser.py); adapters for other agents that persist transcripts (Codex CLI, OpenCode, Gemini CLI) are the roadmap's top item. PRs welcome.
+The parser is isolated in [`donediff/parser.py`](donediff/parser.py); adapters for other agents that persist transcripts (Codex CLI, OpenCode, Gemini CLI) are the roadmap's top item. PRs welcome.
 
 ## Honest limitations
 
@@ -158,7 +161,7 @@ The parser is isolated in [`agent_receipts/parser.py`](agent_receipts/parser.py)
 
 Five zero-dependency tools that audit a finished agent session from five angles:
 
-- **agent-receipts**, did the agent's claims ("tests pass") match reality?
+- **donediff**, did the agent's claims ("tests pass") match reality?
 - [agent-leaks](https://github.com/0xelitesystem/agent-leaks), did it leak secrets into the transcript?
 - [agent-blast-radius](https://github.com/0xelitesystem/agent-blast-radius), what irreversible actions did it take?
 - [agent-rules](https://github.com/0xelitesystem/agent-rules), did it follow your `CLAUDE.md`?
@@ -167,7 +170,7 @@ Five zero-dependency tools that audit a finished agent session from five angles:
 ## Roadmap
 
 - [ ] Adapters: Codex CLI, OpenCode, Gemini CLI session formats
-- [ ] `receipts watch`, live-tail the active session, flag claims as they happen
+- [ ] `donediff watch`, live-tail the active session, flag claims as they happen
 - [ ] Claude Code Stop-hook integration: auto-audit every session on completion
 - [ ] Optional LLM-assisted claim extraction (`--llm`) for non-template phrasing
 - [ ] Re-run mode: actually re-execute the detected test command now and compare
@@ -175,13 +178,13 @@ Five zero-dependency tools that audit a finished agent session from five angles:
 ## Development
 
 ```bash
-git clone https://github.com/0xelitesystem/agent-receipts
-cd agent-receipts
+git clone https://github.com/0xelitesystem/donediff
+cd donediff
 pip install -e .[dev]
 pytest
 
 # time an audit of a synthetic 2,000-transcript, 1 GB session (delete the folder after)
-python benchmarks/bench_delegated.py /tmp/receipts-bench --files 2000 --mb 1024
+python benchmarks/bench_delegated.py /tmp/donediff-bench --files 2000 --mb 1024
 ```
 
 ## More

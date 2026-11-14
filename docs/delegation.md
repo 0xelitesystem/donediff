@@ -2,7 +2,7 @@
 
 Modern Claude Code sessions hand work to sub-agents (the Agent tool) and to
 workflows (many agents run by a script). Each of those agents keeps its own
-transcript. From v0.2, `receipts audit` reads them too, so a "tests pass"
+transcript. From v0.2, `donediff audit` reads them too, so a "tests pass"
 backed by a test run inside an agent is no longer reported as UNVERIFIED.
 
 ## Where the transcripts are
@@ -16,7 +16,7 @@ backed by a test run inside an agent is no longer reported as UNVERIFIED.
   <session>/subagents/workflows/<run>/journal.jsonl      the run's journal
 ```
 
-`receipts` lists only these folders, never walks the disk, does not follow
+`donediff` lists only these folders, never walks the disk, does not follow
 symlinked folders, skips compressed (`.zst`) copies, and reads
 `.jsonl.superseded-<n>` and `.orphaned-` copies as the agent they copy. The
 journal is not needed: the agent transcripts hold the commands.

@@ -6,10 +6,10 @@ import time
 
 import pytest
 
-from agent_receipts.evidence import check_types, masking
-from agent_receipts.gaming import signals_for_event
-from agent_receipts.models import ClaimType, Event, EventKind
-from agent_receipts.shell import normalize_stage, split_statements
+from donediff.evidence import check_types, masking
+from donediff.gaming import signals_for_event
+from donediff.models import ClaimType, Event, EventKind
+from donediff.shell import normalize_stage, split_statements
 
 
 def _kinds(command: str) -> list[str]:
@@ -125,8 +125,8 @@ def test_shell_reading_is_linear_on_hostile_input(name):
 
 
 def test_masked_run_is_judged_from_its_output(tmp_path):
-    from agent_receipts.cli import run_audit
-    from agent_receipts.models import Verdict
+    from donediff.cli import run_audit
+    from donediff.models import Verdict
     from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
     red = write_jsonl(tmp_path / "red.jsonl", [
         assistant_tool("t1", "Bash", {"command": "pytest -q | tail -3"}),
@@ -146,7 +146,7 @@ def test_masked_run_is_judged_from_its_output(tmp_path):
 
 
 def test_norm_path_compares_windows_and_msys_forms():
-    from agent_receipts.shell import norm_path
+    from donediff.shell import norm_path
     assert norm_path("/c/Users/X/repo") == "c:/users/x/repo"
     assert norm_path(r"C:\Users\X\repo\..\b") == "c:/users/x/b"
     assert norm_path("src/a.py", "c:/r") == "c:/r/src/a.py"
@@ -155,7 +155,7 @@ def test_norm_path_compares_windows_and_msys_forms():
 
 
 def test_run_directory_follows_cd():
-    from agent_receipts.shell import run_directory
+    from donediff.shell import run_directory
     is_test = lambda stage: ClaimType.TESTS_PASS in check_types(stage)  # noqa: E731
     assert run_directory('cd "C:/Users/X/repo" && npm test | tail', r"C:\other",
                          is_test) == "c:/users/x/repo"
@@ -167,8 +167,8 @@ def test_run_directory_follows_cd():
 
 
 def test_edits_in_another_repository_do_not_make_a_run_stale(tmp_path):
-    from agent_receipts.cli import run_audit
-    from agent_receipts.models import Verdict
+    from donediff.cli import run_audit
+    from donediff.models import Verdict
     from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 
     def session(name, edited):

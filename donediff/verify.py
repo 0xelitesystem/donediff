@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import bisect
 import re
-import subprocess
 from pathlib import Path
 
 from .evidence import CHECK_TYPES, masked_exit, stage_types
@@ -354,17 +353,6 @@ def _verify_task_done(timeline: Timeline, claim: Claim, ctx: _Context) -> Findin
                           f"verified after final edit by `{_short(run.command)}`", run)
     return _unverified(claim, ctx,
                        "no test/build/typecheck ran between the final edit and this claim")
-
-
-def _git_head_subjects(cwd: str, limit: int = 20) -> list[str]:
-    try:
-        out = subprocess.run(
-            ["git", "log", f"-{limit}", "--format=%H %s"],
-            cwd=cwd, capture_output=True, text=True, timeout=10,
-        )
-        return out.stdout.splitlines() if out.returncode == 0 else []
-    except (OSError, subprocess.TimeoutExpired):
-        return []
 
 
 def verify_claims(session: Session, claims: list[Claim],

@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_receipts.cli import main, run_audit
-from agent_receipts.delegated import discover_sources, session_dir
-from agent_receipts.models import ClaimType, Verdict
-from agent_receipts.parser import epoch
-from agent_receipts.verify import RELAYED_REASON
+from donediff import __version__
+from donediff.cli import main, run_audit
+from donediff.delegated import discover_sources, session_dir
+from donediff.models import ClaimType, Verdict
+from donediff.parser import epoch
+from donediff.verify import RELAYED_REASON
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROJECT = FIXTURES / "sessions" / "proj"
@@ -237,7 +238,7 @@ def test_audit_with_delegated_transcripts_stays_offline(monkeypatch):
 def test_json_report_names_sources(capsys):
     assert main(["audit", str(WORKFLOW), "--json", "--no-disk-check"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["version"] == "0.2.0"
+    assert data["version"] == __version__
     assert data["scope"]["workflow_agent_transcripts"] == 1
     assert {c["evidence_source"] for c in data["claims"]} == {
         "workflow wf_fx-001, agent b1build (build and test)"}

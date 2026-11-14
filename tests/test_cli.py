@@ -1,6 +1,6 @@
 import json
 
-from agent_receipts.cli import main, run_audit
+from donediff.cli import main, run_audit
 
 
 def test_audit_json_output(honest_transcript, capsys):
@@ -40,5 +40,13 @@ def test_markdown_report(honest_transcript, tmp_path, capsys):
     assert main(["audit", honest_transcript, "--no-disk-check",
                  "--md", str(out), "--no-color"]) == 0
     content = out.read_text(encoding="utf-8")
-    assert "agent-receipts audit" in content
+    assert "donediff audit" in content
     assert "VERIFIED" in content
+
+
+def test_old_receipts_command_still_works_and_says_so(honest_transcript, capsys):
+    from donediff.cli import deprecated_main
+    assert deprecated_main(["audit", str(honest_transcript), "--json", "--no-disk-check"]) == 0
+    captured = capsys.readouterr()
+    assert "now `donediff`" in captured.err
+    assert captured.out.lstrip().startswith("{")

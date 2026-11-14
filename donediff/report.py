@@ -103,7 +103,7 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
 
     title = _safe(session.slug or Path(session.path).stem[:12])
     out("")
-    out(_paint("  agent-receipts", _BOLD, _CYAN, enabled=color)
+    out(_paint("  donediff", _BOLD, _CYAN, enabled=color)
         + _paint(", claims vs. reality", _DIM, enabled=color))
     out(_paint(f"  session {title} · {len(session.events)} events"
                + (f" · {_safe(session.cwd)}" if session.cwd else ""),
@@ -118,7 +118,7 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
 
     score_style = _GREEN if result.score >= 80 else (
         _YELLOW if result.score >= 60 else _RED)
-    out(f"  {_paint('RECEIPTS SCORE', _BOLD, enabled=color)}  "
+    out(f"  {_paint('DONEDIFF SCORE', _BOLD, enabled=color)}  "
         + _paint(f"{result.score}/100 ({result.grade})", _BOLD, score_style,
                  enabled=color))
     counts = result.counts()
@@ -197,7 +197,7 @@ def render_json(result: AuditResult) -> str:
 
 def render_markdown(result: AuditResult) -> str:
     lines = [
-        "# agent-receipts audit",
+        "# donediff audit",
         "",
         f"- **Transcript:** `{_safe(Path(result.session.path).name)}`",
         f"- **Project:** `{_safe(result.session.cwd or 'unknown')}`",

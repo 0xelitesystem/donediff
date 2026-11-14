@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_receipts.cli import run_audit
-from agent_receipts.delegated import discover_sources, read_source
-from agent_receipts.evidence import check_types, masking
-from agent_receipts.models import ClaimType, EventKind, Verdict
-from agent_receipts.parser import epoch, parse_transcript
-from agent_receipts.verify import MASKED_REASON, RELAYED_REASON
+from donediff.cli import run_audit
+from donediff.delegated import discover_sources, read_source
+from donediff.evidence import check_types, masking
+from donediff.models import ClaimType, EventKind, Verdict
+from donediff.parser import epoch, parse_transcript
+from donediff.verify import MASKED_REASON, RELAYED_REASON
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 
 PROJECT = Path(__file__).parent / "fixtures" / "sessions" / "proj"

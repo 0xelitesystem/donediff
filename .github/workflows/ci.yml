@@ -21,7 +21,7 @@ jobs:
       - run: pip install -e .[dev]
       - run: pytest -q
       - name: Demo audit must score 0 and gate correctly
-        run: "! receipts audit examples/demo-session.jsonl --no-disk-check --fail-under 1"
+        run: "! donediff audit examples/demo-session.jsonl --no-disk-check --fail-under 1"
         shell: bash
       - name: Delegated fixture audit must find the workflow evidence
-        run: receipts audit tests/fixtures/sessions/proj/s2-wf.jsonl --no-disk-check --fail-under 90
+        run: donediff audit tests/fixtures/sessions/proj/s2-wf.jsonl --no-disk-check --fail-under 90

@@ -15,13 +15,13 @@ import re
 import sys
 import time
 
-from agent_receipts.claims import extract_claims
-from agent_receipts.cli import main, run_audit
-from agent_receipts.gaming import detect_gaming
-from agent_receipts.models import ClaimType, Verdict
-from agent_receipts.parser import parse_transcript
-from agent_receipts.report import render_markdown, render_terminal
-from agent_receipts.verify import verify_claims
+from donediff.claims import extract_claims
+from donediff.cli import main, run_audit
+from donediff.gaming import detect_gaming
+from donediff.models import ClaimType, Verdict
+from donediff.parser import parse_transcript
+from donediff.report import render_markdown, render_terminal
+from donediff.verify import verify_claims
 
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 
@@ -265,7 +265,7 @@ def test_secrets_are_redacted_from_markdown_and_terminal(tmp_path, capsys):
 
 
 def test_redaction_covers_common_secret_shapes():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     cases = {
         'curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.abc" https://api.x.io':
@@ -298,7 +298,7 @@ def test_redaction_covers_common_secret_shapes():
 
 
 def test_redaction_leaves_ordinary_commands_alone():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for command in [
         "python -m pytest tests/ -q || true",
@@ -320,7 +320,7 @@ def test_redaction_leaves_ordinary_commands_alone():
 
 
 def test_redaction_is_linear_on_hostile_input():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for hostile in ["a." * 50_000, "a_" * 50_000, "://a:" * 20_000,
                     "token=\"" * 20_000, "Bearer " * 20_000, "x" * 100_000]:
@@ -330,7 +330,7 @@ def test_redaction_is_linear_on_hostile_input():
 
 
 def test_redaction_leaves_lookalike_names_and_prose_alone():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for command in [
         # a bare "key" name needs a secret-shaped value
@@ -350,7 +350,7 @@ def test_redaction_leaves_lookalike_names_and_prose_alone():
 
 
 def test_redaction_masks_secret_names_and_secret_shaped_key_values():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     cases = {
         # a bare "key" name with a secret-shaped value is still masked
@@ -385,7 +385,7 @@ def test_redaction_masks_secret_names_and_secret_shaped_key_values():
 
 
 def test_narrowed_redaction_is_linear_on_hostile_input():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for hostile in ["key=" * 25_000 + ".", "a_key: " * 15_000,
                     "key=\"" * 20_000, "key='" * 20_000,
@@ -401,7 +401,7 @@ def test_narrowed_redaction_is_linear_on_hostile_input():
 # ---------------------------------------------------------------------------
 
 def test_final_rule_masks_credential_assignments():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     cases = {
         # the required cases
@@ -460,7 +460,7 @@ def test_final_rule_masks_credential_assignments():
 
 
 def test_final_rule_leaves_lookalikes_and_non_secrets_alone():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for command in [
         # the required cases
@@ -493,7 +493,7 @@ def test_final_rule_leaves_lookalikes_and_non_secrets_alone():
 
 
 def test_final_rule_token_prefixes_need_12_characters():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for prefix in ["sk-", "sk_live_", "rk_", "ghp_", "gho_", "ghu_", "ghs_",
                    "ghr_", "github_pat_", "glpat-", "xoxa-", "xoxb-", "xoxp-",
@@ -507,7 +507,7 @@ def test_final_rule_token_prefixes_need_12_characters():
 
 
 def test_final_rule_is_linear_on_hostile_input():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for hostile in ["--password " * 20_000, "--password " * 20_000 + "-",
                     "auth: " * 20_000, "auth: x " * 15_000,
@@ -545,7 +545,7 @@ _SCHEME_HEADER_CASES = {
 
 
 def test_scheme_word_after_any_credential_header_masks_the_value():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for raw, (secret, expected) in _SCHEME_HEADER_CASES.items():
         redacted = redact_secrets(raw)
@@ -554,7 +554,7 @@ def test_scheme_word_after_any_credential_header_masks_the_value():
 
 
 def test_scheme_word_masks_the_value_in_other_header_shapes():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     cases = {
         # a quoted value after the scheme is masked whole
@@ -592,7 +592,7 @@ def test_scheme_word_masks_the_value_in_other_header_shapes():
 
 
 def test_scheme_word_leaves_references_prose_and_shell_words_alone():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for command in [
         # $VARS after the scheme are references
@@ -613,7 +613,7 @@ def test_scheme_word_leaves_references_prose_and_shell_words_alone():
 
 
 def test_scheme_word_masks_escaped_quotes_parameters_and_dict_values():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     cases = {
         # an escaped quote after the scheme, inside a double-quoted word
@@ -708,7 +708,7 @@ def test_scheme_word_secrets_stay_out_of_reports(tmp_path, capsys):
 
 
 def test_scheme_word_redaction_is_linear_on_hostile_input():
-    from agent_receipts.redact import redact_secrets
+    from donediff.redact import redact_secrets
 
     for hostile in ["X-Api-Key: Basic " * 15_000, "Token: bearer " * 15_000,
                     "token:bot\t" * 20_000, "a_key: token " * 15_000 + "x",
@@ -827,7 +827,7 @@ def test_delete_test_detection_still_flags_real_deletes(tmp_path):
 
 
 def test_delete_test_detection_matches_old_pattern():
-    from agent_receipts.gaming import _deletes_test_file
+    from donediff.gaming import _deletes_test_file
 
     rng = random.Random(1234)
     tokens = ["rm", "del", "Remove-Item", "RM", "test", "spec", "Tests", "s",

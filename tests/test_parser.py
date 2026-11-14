@@ -1,5 +1,5 @@
-from agent_receipts.models import EventKind
-from agent_receipts.parser import parse_transcript
+from donediff.models import EventKind
+from donediff.parser import parse_transcript
 
 
 def test_parses_events_in_order(honest_transcript):

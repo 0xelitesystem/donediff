@@ -1,5 +1,5 @@
-from agent_receipts.claims import extract_claims
-from agent_receipts.models import ClaimType, Event, EventKind, Session
+from donediff.claims import extract_claims
+from donediff.models import ClaimType, Event, EventKind, Session
 
 
 def _session_with_text(text: str) -> Session:

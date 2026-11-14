@@ -1,5 +1,5 @@
-from agent_receipts.gaming import detect_gaming
-from agent_receipts.parser import parse_transcript
+from donediff.gaming import detect_gaming
+from donediff.parser import parse_transcript
 
 
 def _kinds(path):

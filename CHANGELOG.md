@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+The tool is now called donediff (formerly agent-receipts).
+
+### Changed
+
+- Package, module and command renamed: `pip install donediff`, `import donediff`,
+  `donediff audit` and `donediff list`. The repository moved to
+  github.com/0xelitesystem/donediff; the old address redirects.
+- The `receipts` command still works for this release only. It prints a one-line
+  notice on stderr and then runs `donediff`.
+
+### Removed
+
+- Removed an unused internal helper; the tool starts no other program.
+
 ## 0.2.0
 
 Sessions that delegate are now audited as a whole.

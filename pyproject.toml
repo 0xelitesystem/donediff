@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-receipts"
-version = "0.2.0"
+name = "donediff"
+version = "0.3.0"
 description = "Audit what your coding agent claimed against what it actually did."
 readme = "README.md"
 license = "MIT"
@@ -21,11 +21,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/0xelitesystem/agent-receipts"
-Issues = "https://github.com/0xelitesystem/agent-receipts/issues"
+Homepage = "https://github.com/0xelitesystem/donediff"
+Issues = "https://github.com/0xelitesystem/donediff/issues"
 
 [project.scripts]
-receipts = "agent_receipts.cli:main"
+donediff = "donediff.cli:main"
+receipts = "donediff.cli:deprecated_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

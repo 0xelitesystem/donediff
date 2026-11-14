@@ -1,4 +1,4 @@
-"""Data models for agent-receipts.
+"""Data models for donediff.
 
 Everything the auditor reasons about is one of these shapes:
 a Session is an ordered list of Events (assistant text or tool calls),

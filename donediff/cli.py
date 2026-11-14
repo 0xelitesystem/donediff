@@ -1,8 +1,8 @@
-"""receipts: audit what your coding agent claimed against what it did.
+"""donediff: audit what your coding agent claimed against what it did.
 
 Usage:
-  receipts audit <transcript.jsonl | session-id-prefix | latest> [options]
-  receipts list [--project NAME] [--limit N]
+  donediff audit <transcript.jsonl | session-id-prefix | latest> [options]
+  donediff list [--project NAME] [--limit N]
 
 Options:
   --main-only       read only the main transcript (v0.1 behaviour); by default
@@ -67,7 +67,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
                            main_only=args.main_only)
     except FileNotFoundError as exc:
-        print(f"receipts: {exc}", file=sys.stderr)
+        print(f"donediff: {exc}", file=sys.stderr)
         return 2
 
     if args.json:
@@ -102,10 +102,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="receipts",
+        prog="donediff",
         description="Audit what your coding agent claimed against what it actually did.",
     )
-    parser.add_argument("--version", action="version", version=f"receipts {__version__}")
+    parser.add_argument("--version", action="version", version=f"donediff {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     audit = sub.add_parser("audit", help="audit one session transcript")
@@ -140,6 +140,13 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     args = build_parser().parse_args(argv)
     return args.func(args)
+
+
+def deprecated_main(argv: list[str] | None = None) -> int:
+    """The old `receipts` command. Kept for one release; use `donediff`."""
+    print("receipts: this command is now `donediff`; `receipts` will be removed in the next release.",
+          file=sys.stderr)
+    return main(argv)
 
 
 if __name__ == "__main__":

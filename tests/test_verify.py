@@ -1,7 +1,7 @@
-from agent_receipts.claims import extract_claims
-from agent_receipts.models import ClaimType, Verdict
-from agent_receipts.parser import parse_transcript
-from agent_receipts.verify import verify_claims
+from donediff.claims import extract_claims
+from donediff.models import ClaimType, Verdict
+from donediff.parser import parse_transcript
+from donediff.verify import verify_claims
 
 
 def _audit(path):

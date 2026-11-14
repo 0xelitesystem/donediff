@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent_receipts.cli import run_audit  # noqa: E402
+from donediff.cli import run_audit  # noqa: E402
 
 SESSION = "00000000-0000-4000-8000-00000000bench"
 FILLER = ("line of ordinary tool output that the auditor never needs to keep\n" * 64)
