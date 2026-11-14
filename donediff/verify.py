@@ -255,6 +255,10 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
         return _unverified(claim, ctx, _NO_RUN_REASON.get(
             kind, "no command that could back this claim was run before it"))
     run_key, run = last
+    if run.result_seen is False:
+        # The log ends (or moves on) before this run's result: no proof either way.
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"no result for this run in the log: `{_short(run.command)}`", run)
     if _command_failed(run):
         if run.is_error or (run.exit_code or 0) != 0:
             reason = f"exit {run.exit_code if run.exit_code is not None else '?'}"

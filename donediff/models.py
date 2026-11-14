@@ -38,6 +38,10 @@ class Event:
     output: str = ""
     is_error: bool = False
     exit_code: int | None = None
+    # Whether the log holds a result for this call. The parser sets False when
+    # the call is made and True when its result (or completion notice) arrives;
+    # None = not tracked (hand-built events). False never reads as a success.
+    result_seen: bool | None = None
     cwd: str = ""  # working directory the tool call started in
 
     # Ordering across transcripts. `t` is seconds since the epoch: for a

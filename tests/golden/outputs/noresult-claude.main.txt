@@ -1,0 +1,13 @@
+
+[1m[36m  donediff[0m[2m, claims vs. reality[0m
+[2m  session noresult-cla · 4 events · /home/dev/golden[0m
+[2m  evidence from the main transcript only (--main-only)[0m
+
+  [1mDONEDIFF SCORE[0m  [1m[33m62/100 (D)[0m
+[2m  1 verified · 0 stale · 1 unverified · 0 contradicted[0m
+
+[1m  CLAIMS[0m
+  [32m✓ VERIFIED    [0m “The build is clean.”
+[2m    └─ `npm run build` succeeded (exit 0) [in main][0m
+  [33m? UNVERIFIED  [0m “All tests pass.”
+[2m    └─ no result for this run in the log: `python -m pytest -q` [in main][0m

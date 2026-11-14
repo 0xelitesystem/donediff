@@ -233,7 +233,8 @@ def read_source(source: Source) -> Source:
                     event = Event(kind=EventKind.TOOL_CALL, index=-1,
                                   tool_name=name, tool_id=str(block.get("id", "")),
                                   tool_input=tool_input if isinstance(tool_input, dict) else {},
-                                  source=source, cwd=str(record.get("cwd", "") or ""))
+                                  source=source, cwd=str(record.get("cwd", "") or ""),
+                                  result_seen=False)
                     if where is None:
                         where = source.describe()
                     source.gaming.extend(signals_for_event(event, where))
@@ -256,6 +257,7 @@ def read_source(source: Source) -> Source:
                     event = pending.pop(str(block.get("tool_use_id", "")), None)
                     if event is None:
                         continue
+                    event.result_seen = True
                     event.is_error = bool(block.get("is_error"))
                     event.output = _result_text(block, tool_use_result)
                     exit_code_of(event)
