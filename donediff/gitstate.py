@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .shell import is_remote_path
+from .shell import confined, is_remote_path
 
 TIMEOUT = 10.0  # seconds per git call
 OUTPUT_CAP = 4 * 1024 * 1024  # bytes read from one call; more is an error
@@ -120,9 +120,31 @@ def _refuse_network_repository(project: Path) -> None:
     for gitdir in gitdirs:
         alternates = _read_small(gitdir / "objects" / "info" / "alternates")
         values = [line.strip() for line in alternates.splitlines()]
-        for line in _read_small(gitdir / "config").splitlines():
-            if "=" in line:
-                values.append(line.split("=", 1)[1].strip().strip("\"'"))
+        # The config and every local file it includes ([include] / [includeIf] path = ...),
+        # followed as plain text, so an included file cannot point git at a network path either.
+        pending, seen = [gitdir / "config"], set()
+        while pending and len(seen) < 10:
+            config = pending.pop()
+            key = os.path.normcase(os.path.abspath(config))
+            if key in seen:
+                continue
+            seen.add(key)
+            section = ""
+            for line in _read_small(config).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    section = stripped[1:].split("]", 1)[0].split(None, 1)[0].strip("\"").lower()
+                    continue
+                if "=" not in line:
+                    continue
+                name, value = (part.strip() for part in line.split("=", 1))
+                value = value.strip("\"'")
+                values.append(value)
+                if section in ("include", "includeif") and name.lower() == "path" and value \
+                        and not is_remote_path(value) and not value.startswith("~"):
+                    pending.append(config.parent / _windows_path(value))
+        if pending:
+            raise GitError("repository config includes too many files")
         if any(is_remote_path(v) for v in values if v):
             raise GitError("repository points at a network or device path")
 
@@ -341,19 +363,12 @@ class GitRepo:
         followed, and refused when it lands outside the project: no
         path named in a transcript can make us look elsewhere.
         """
-        if not claimed or is_remote_path(claimed):
-            return None
-        raw = Path(_windows_path(claimed.strip().strip("\"'")))
-        full = raw if raw.is_absolute() else Path(self.project) / raw
-        if is_remote_path(full):
+        resolved = confined(claimed, self.project)
+        if resolved is None:
             return None
         try:
-            resolved = Path(os.path.normpath(full)).resolve()
-            project = Path(self.project)
-            if not (resolved == project or resolved.is_relative_to(project)):
-                return None
             return resolved.relative_to(Path(self.toplevel)).as_posix()
-        except (OSError, ValueError, RuntimeError):
+        except ValueError:
             return None
 
     def where_touched(self, rels: list[str], commits: list[Commit],

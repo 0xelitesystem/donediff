@@ -14,8 +14,10 @@ check (a command it cannot read counts as no evidence and no signal).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 # Programs whose job is to page or filter output. As the last stage of a
 # pipeline they decide its exit status (without pipefail), so a failing
@@ -271,6 +273,35 @@ def is_remote_path(path) -> bool:
     """
     text = str(path).replace("/", "\\")
     return text.startswith("\\\\") or text.startswith("\\??\\")
+
+
+def confined(path, root) -> Path | None:
+    """`path` resolved (symlinks followed) when it lands inside `root`, else None.
+
+    Both come from the transcript, so both are untrusted. Network and device
+    paths are refused before anything touches them; a relative path is joined
+    to `root`; `..` parts and symlinks that lead outside `root` are refused.
+    Every disk or git check of a path named in a transcript goes through here.
+    """
+    if not path or not root or is_remote_path(path) or is_remote_path(root):
+        return None
+    try:
+        base = Path(os.path.normpath(windows_drive(str(root)))).resolve()
+        full = Path(windows_drive(str(path).strip().strip("\"'")))
+        full = full if full.is_absolute() else base / full
+        if is_remote_path(full):
+            return None
+        resolved = Path(os.path.normpath(full)).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if is_remote_path(resolved):
+        return None
+    return resolved if resolved == base or resolved.is_relative_to(base) else None
+
+
+def windows_drive(path: str) -> str:
+    """/c/Users/x (Git Bash form) as C:/Users/x on Windows; else unchanged."""
+    return _DRIVE_MSYS.sub(lambda m: m.group(1) + ":", path) if os.name == "nt" else path
 
 
 def norm_path(path: str, base: str | None = None) -> str | None:

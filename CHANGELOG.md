@@ -45,6 +45,10 @@ donediff now reads the project's git state.
 - `--help` names the "donediff score" and lists the exit codes.
 - The tool now starts one other program: `git`, for the checks above. With
   `--no-disk-check` it starts none.
+- The file-on-disk check looks only inside the session's project folder (links
+  followed). A path outside it, or a network or device path, is not checked and
+  the finding says why. A repository whose config, or a file the config
+  includes, points at a network path is not read with git.
 
 ### Removed
 

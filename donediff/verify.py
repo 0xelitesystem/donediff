@@ -47,7 +47,7 @@ from .models import (
 )
 from .parser import epoch
 from .redact import redact_secrets
-from .shell import is_remote_path, norm_path, run_directory
+from .shell import confined, is_remote_path, norm_path, run_directory, windows_drive
 
 RELAYED_REASON = "relayed from an agent's report, no command result seen"
 MASKED_REASON = "exit code hidden by a pipe and output does not show the result"
@@ -288,27 +288,41 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
 _is_remote_path = is_remote_path  # kept under its old name for callers and tests
 
 
+_SKIP_REMOTE = "network or device path"
+_SKIP_OUTSIDE = "outside the project folder"
+
+
+def _confine(path, base, root: str, skipped: set[str]) -> Path | None:
+    """`path` (joined to `base` when relative) if it is safe to check on disk, else None.
+
+    Safe means inside the session's project folder `root` (symlinks followed) and never a
+    network or device path. The reason for each refusal goes into `skipped`.
+    """
+    if not path:
+        return None
+    path, base = windows_drive(str(path)), windows_drive(str(base)) if base else None
+    full = Path(path) if Path(path).is_absolute() or not base else Path(base) / path
+    if _is_remote_path(path) or _is_remote_path(base or "") or _is_remote_path(full) \
+            or _is_remote_path(root):
+        skipped.add(_SKIP_REMOTE)
+        return None
+    inside = confined(full, root)
+    if inside is None:
+        skipped.add(_SKIP_OUTSIDE)
+    return inside
+
+
 def _local_candidates(session: Session, claim: Claim,
-                      writes: list[Event]) -> tuple[list[Path], bool]:
-    """Paths safe to check on disk, and whether any were skipped as remote."""
-    candidates: list[Path] = []
-    skipped = False
-    if _is_remote_path(session.cwd) or _is_remote_path(claim.detail):
-        skipped = True
-    else:
-        joined = Path(session.cwd) / claim.detail
-        if _is_remote_path(joined):
-            skipped = True
-        else:
-            candidates.append(joined)
-    for w in writes:
-        if not w.file_path:
-            continue
-        if _is_remote_path(w.file_path) or _is_remote_path(Path(w.file_path)):
-            skipped = True
-        else:
-            candidates.append(Path(w.file_path))
-    return candidates, skipped
+                      writes: list[Event]) -> tuple[list[Path], set[str]]:
+    """Paths safe to check on disk, and why any were skipped (empty when none were)."""
+    skipped: set[str] = set()
+    candidates = [_confine(claim.detail, session.cwd, session.cwd, skipped)]
+    candidates += [_confine(w.file_path, None, session.cwd, skipped) for w in writes if w.file_path]
+    return [p for p in candidates if p is not None], skipped
+
+
+def _not_checked(skipped: set[str]) -> str:
+    return "disk not checked (" + "; ".join(sorted(skipped)) + ")"
 
 
 def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
@@ -336,8 +350,7 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
         on_disk = any(p.exists() for p in candidates)
         if not on_disk and skipped:
             return _found(claim, ctx, Verdict.VERIFIED,
-                          f"{last.tool_name} call for `{name}` found; "
-                          f"disk not checked (network or device path)", last)
+                          f"{last.tool_name} call for `{name}` found; {_not_checked(skipped)}", last)
         if not on_disk:
             return _found(claim, ctx, Verdict.CONTRADICTED,
                           f"`{claim.detail}` was written in-session but is not on disk now",
@@ -450,15 +463,12 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
     if check_disk and session.cwd:
         candidates, skipped = _local_candidates(session, claim, writes)
         for event, path in shell_paths:
-            full = Path(event.cwd or session.cwd) / path
-            if is_remote_path(path) or is_remote_path(full):
-                skipped = True
-            else:
-                candidates.append(full)
+            inside = _confine(path, event.cwd or session.cwd, session.cwd, skipped)
+            if inside is not None:
+                candidates.append(inside)
         if not any(p.exists() for p in candidates):
             if skipped:
-                return _found(claim, ctx, Verdict.VERIFIED,
-                              f"{how}; disk not checked (network or device path)", last)
+                return _found(claim, ctx, Verdict.VERIFIED, f"{how}; {_not_checked(skipped)}", last)
             return _found(claim, ctx, Verdict.CONTRADICTED,
                           f"`{target}` was written in-session but is not on disk now", last)
         return _found(claim, ctx, Verdict.VERIFIED, f"{how} and it exists on disk", last)
