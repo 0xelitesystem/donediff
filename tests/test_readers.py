@@ -56,6 +56,6 @@ def test_action_from_name_and_from_reader():
 
 
 def test_run_audit_takes_agent(tmp_path):
-    from tests.conftest import assistant_text, write_jsonl
+    from conftest import assistant_text, write_jsonl
     path = write_jsonl(tmp_path / "s.jsonl", [assistant_text("Hello.")])
     assert cli.run_audit(path, check_disk=False, agent="claude-code").score is None
