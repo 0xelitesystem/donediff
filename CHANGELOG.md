@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0
+
+donediff now reads the project's git state.
+
+### Added
+
+- Git checks, on when the disk check is on and the session's project directory is
+  a git work tree:
+  - "committed": a commit made during the session exists on a local branch or
+    HEAD, and when the transcript's `git commit -m` message is known, one has that
+    subject. None found is CONTRADICTED.
+  - "pushed": the session's newest commit is on a remote-tracking branch, read
+    from local refs only. Nothing is fetched.
+  - A file a claim says was created or edited is in a session commit
+    (`git show --name-only`) or in the working-tree changes (`git status
+    --porcelain`). In neither, the claim is CONTRADICTED ("names a file the diff
+    does not touch").
+  - A commit id in a claim is found with `git cat-file -e`, or the claim is
+    CONTRADICTED.
+  - When git is missing, the folder is not a repository or a git call fails, the
+    claim keeps its transcript verdict and says `git state not checked (<reason>)`.
+- Git is run read-only on a repository treated as untrusted: an argument list,
+  `git -C <dir> --no-pager`, a timeout and an output cap on every call, and
+  fsmonitor, hooks, external diff, textconv, signature checks, every
+  clean/smudge filter the config names and all network transports turned off.
+  Paths named in claims are resolved inside the project directory only.
+- New claim words: "deployed", "is live", "shipped to production" (backed by a
+  successful deploy command: wrangler, vercel, netlify, gh release create, twine
+  upload, npm publish, rsync or scp to a host); "N of N pass" and "N/N tests"
+  (the test run's output must show that count); a commit id after "commit" or
+  "committed as" (found in git, or printed by a commit command in the
+  transcript); "report at", "saved to" and "wrote" a path (written in the
+  transcript, and on disk with the disk check on); "edited", "updated" and
+  "modified" a file.
+- `--fail-under N` now fails a session with no score: exit code 3 and a one-line
+  reason on stderr. Without `--fail-under` the exit code is unchanged.
+
+### Changed
+
+- When one sentence holds two claims, each finding quotes the phrase it judged,
+  not the whole sentence. The JSON report adds a `sentence` field with the full
+  sentence.
+- `--help` names the "donediff score" and lists the exit codes.
+- The tool now starts one other program: `git`, for the checks above. With
+  `--no-disk-check` it starts none.
+
+### Removed
+
+- The `receipts` command, deprecated in 0.3.0. Use `donediff`.
+
 ## 0.3.0
 
 The tool is now called donediff (formerly agent-receipts).
