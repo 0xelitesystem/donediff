@@ -9,6 +9,7 @@ How "auto" picks a reader:
   Qwen Code and Cline with a matching session, else Claude Code (whose "not
   found" message is shown);
   an opencode database path with "#<session-id prefix>" goes to opencode;
+  Goose (sessions.db) comes after these in every step above, likewise;
 - `list`: as "latest".
 """
 
@@ -23,8 +24,9 @@ from .codex import CODEX
 from .gemini import GEMINI
 from .opencode import OPENCODE
 from .qwen import QWEN
+from .goose import GOOSE
 
-READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI, QWEN, CLINE)
+READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI, QWEN, CLINE, GOOSE)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
 __all__ = ["AGENT_CHOICES", "READERS", "Reader", "UnreadableSession", "select",

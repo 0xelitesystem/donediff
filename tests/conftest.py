@@ -156,3 +156,9 @@ def _no_real_cline_sessions(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("CLINE_DIR", str(tmp_path_factory.mktemp("cline-home")))
     monkeypatch.delenv("CLINE_DATA_DIR", raising=False)
     monkeypatch.delenv("CLINE_SESSION_DATA_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_goose_db(monkeypatch, tmp_path_factory):
+    """Point GOOSE_PATH_ROOT at an empty folder so no test sees a real Goose sessions.db."""
+    monkeypatch.setenv("GOOSE_PATH_ROOT", str(tmp_path_factory.mktemp("goose-root")))

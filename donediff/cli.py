@@ -15,9 +15,9 @@ Options:
                     session has no score (CI gate)
   --no-color        disable ANSI colors
   --agent NAME      transcript reader: auto (default), claude-code, codex,
-                    opencode, gemini, qwen or cline (opencode target: a
-                    session id, the database path, or the database path +
-                    "#<session id>")
+                    opencode, gemini, qwen, cline or goose (opencode and goose
+                    target: a session id, the database path, or the database
+                    path + "#<session id>")
 
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
