@@ -148,3 +148,11 @@ def _no_real_qwen_sessions(monkeypatch, tmp_path_factory):
     """Point QWEN_HOME at an empty folder so no test sees a real ~/.qwen."""
     monkeypatch.setenv("QWEN_HOME", str(tmp_path_factory.mktemp("qwen-home")))
     monkeypatch.delenv("QWEN_RUNTIME_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_cline_sessions(monkeypatch, tmp_path_factory):
+    """Point CLINE_DIR at an empty folder so no test sees a real ~/.cline."""
+    monkeypatch.setenv("CLINE_DIR", str(tmp_path_factory.mktemp("cline-home")))
+    monkeypatch.delenv("CLINE_DATA_DIR", raising=False)
+    monkeypatch.delenv("CLINE_SESSION_DATA_DIR", raising=False)

@@ -15,7 +15,8 @@ from donediff.readers.claude_code import CLAUDE_CODE
 
 def test_registry_has_claude_code_first():
     assert READERS[0] is CLAUDE_CODE
-    assert AGENT_CHOICES == ("auto", "claude-code", "codex", "opencode", "gemini", "qwen")
+    assert AGENT_CHOICES == ("auto", "claude-code", "codex", "opencode", "gemini", "qwen",
+                              "cline")
 
 
 def test_select():

@@ -12,6 +12,7 @@ from pathlib import Path
 from .. import delegated, parser
 from ..models import Session
 from ..parser import loads
+from .cline import is_cline_document
 from .qwen import is_qwen_record
 
 # Record types a Claude Code transcript starts with or holds.
@@ -63,6 +64,8 @@ class ClaudeCodeReader:
             return False  # a Gemini CLI session's metadata line, not Claude Code
         if is_qwen_record(record):
             return False  # a Qwen Code record (message parts, not content)
+        if is_cline_document(record):
+            return False  # a Cline messages file written on one line
         return record.get("type") in _RECORD_TYPES or "sessionId" in record
 
     def describe(self, path: Path) -> tuple[str, str]:

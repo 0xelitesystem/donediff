@@ -1,0 +1,17 @@
+session.messages.json: licensed fixture, not a real run.
+
+Origin: github.com/cline/cline, sdk/packages/core/fixtures/session/session.messages.json
+Read at commit 146894b6a42a7a554c6ff37f7bb33fe5122cc33d (branch main, 2026-11-16); the file
+last changed in commit a6239c420c1dcc58da3fa511054784d1e49d0f85.
+sha256 6d232bfcd6b9994a6d88f33f81c7fa678af1cafcd27860c2fe52b25c4bc2c85e (same as upstream).
+Copyright 2026 Cline Bot Inc. Licensed under the Apache License, Version 2.0; a copy of the
+licence is in LICENSE-cline.txt beside this file (sha256 equal to the upstream LICENSE).
+Copied unmodified, byte for byte.
+
+It is a test fixture published by the Cline project, with paths under /Users/example. It is
+used here only to check that donediff's Cline reader parses Cline's own published session
+shape. donediff does not present it as a run of its own or of any named person.
+
+Attribution: session.messages.json: Cline test fixture, copied unmodified from
+github.com/cline/cline (commit 146894b6a42a7a554c6ff37f7bb33fe5122cc33d), Apache License 2.0;
+Copyright 2026 Cline Bot Inc. Licensed fixture, not a real run.
