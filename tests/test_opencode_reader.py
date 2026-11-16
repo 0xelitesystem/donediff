@@ -293,3 +293,64 @@ def test_session_path_stats_as_the_session(tmp_path):
     result = audit(db)
     assert result.session.path.endswith("#ses_demo0001")
     assert result.session.scan.bytes == path.stat().st_size
+
+
+# -- SEC-203 / SEC-204 ----------------------------------------------------------
+
+@pytest.mark.parametrize("xdg", ["\\\\srv\\share", "//srv/share"])
+def test_relative_db_on_a_remote_data_home_is_never_used(monkeypatch, xdg):
+    # SEC-203: the final joined path is checked, not only the two parts.
+    monkeypatch.setenv("XDG_DATA_HOME", xdg)
+    monkeypatch.setenv("OPENCODE_DB", "opencode.db")
+    assert oc.database_path() is None
+    monkeypatch.delenv("OPENCODE_DB")
+    assert oc.database_path() is None
+
+
+def _to_wal(db) -> None:
+    conn = sqlite3.connect(db)
+    assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    conn.close()  # the last close checkpoints and removes -wal and -shm
+
+
+@pytest.mark.parametrize("schema", SCHEMAS)
+def test_wal_db_with_no_side_files_gets_none_created(tmp_path, monkeypatch, schema, capsys):
+    # SEC-204: opencode runs WAL; a read must not create -shm or -wal beside it.
+    db = mk.demo(tmp_path / "opencode.db", schema)
+    _to_wal(db)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["opencode.db"]
+    assert oc._open_mode(Path(db)) == "?mode=ro&immutable=1"
+    before = sha(db)
+    monkeypatch.setenv("OPENCODE_DB", db)
+    assert audit(db).session.tool_calls()
+    OPENCODE.detect(Path(db))
+    assert cli.main(["list", "--agent", "opencode"]) == 0
+    assert "ses_demo0001" in capsys.readouterr().out
+    assert sha(db) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["opencode.db"]
+
+
+def test_wal_db_with_a_lone_wal_file_is_refused_and_nothing_created(tmp_path):
+    db = mk.demo(tmp_path / "opencode.db")
+    _to_wal(db)
+    (tmp_path / "opencode.db-wal").write_bytes(b"leftover")
+    with pytest.raises(UnreadableSession):
+        oc._open_mode(Path(db))
+    with pytest.raises(UnreadableSession):
+        OPENCODE.parse(oc.session_path(Path(db), "ses_demo0001", "v2"))
+    with pytest.raises(FileNotFoundError):  # list/resolve skip it: nothing to audit
+        OPENCODE.resolve(db)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["opencode.db", "opencode.db-wal"]
+
+
+def test_wal_db_with_both_side_files_reads_them(tmp_path):
+    db = mk.demo(tmp_path / "opencode.db")
+    _to_wal(db)
+    (tmp_path / "opencode.db-wal").write_bytes(b"")
+    (tmp_path / "opencode.db-shm").write_bytes(b"")
+    assert oc._open_mode(Path(db)) == "?mode=ro"
+
+
+def test_rollback_journal_db_opens_plain_read_only(tmp_path):
+    db = mk.demo(tmp_path / "opencode.db")
+    assert oc._open_mode(Path(db)) == "?mode=ro"

@@ -83,14 +83,13 @@ def database_path() -> Path | None:
     env = os.environ.get("OPENCODE_DB")
     xdg = os.environ.get("XDG_DATA_HOME")
     data = (Path(xdg) if xdg else Path(os.path.expanduser("~")) / ".local" / "share") / "opencode"
-    if env:
-        if env == ":memory:" or is_remote_path(env):
-            return None
-        path = Path(env)
-        return path if path.is_absolute() else data / path
-    if xdg and is_remote_path(xdg):
+    if env == ":memory:":
         return None
-    return data / "opencode.db"
+    path = Path(env) if env else Path("opencode.db")
+    result = path if path.is_absolute() else data / path
+    # SEC-203: check the final path, so a relative $OPENCODE_DB joined onto a
+    # remote $XDG_DATA_HOME is never touched (SMB/NTLM on Windows).
+    return None if is_remote_path(os.fspath(result)) or is_remote_path(env or "") else result
 
 
 class SessionPath(type(Path())):
@@ -137,7 +136,7 @@ class _Conn:
 
     def __enter__(self) -> sqlite3.Connection:
         try:
-            uri = Path(os.path.abspath(self.db)).as_uri() + "?mode=ro"
+            uri = Path(os.path.abspath(self.db)).as_uri() + _open_mode(self.db)
             self.conn = sqlite3.connect(uri, uri=True, timeout=_TIMEOUT)
             self.conn.execute("PRAGMA query_only = 1")
         except sqlite3.Error as exc:
@@ -149,6 +148,36 @@ class _Conn:
     def __exit__(self, *exc) -> None:
         if self.conn is not None:
             self.conn.close()
+
+
+def _open_mode(db: Path) -> str:
+    """URI query that opens the file without creating anything next to it (SEC-204).
+
+    opencode runs its database in WAL mode (packages/core/src/database/database.ts,
+    `PRAGMA journal_mode = WAL`). A mode=ro connection to a WAL database with no
+    -shm file creates -shm and -wal beside it. When the header says WAL and the
+    two side files are not both there, open it immutable: nothing is created and
+    nothing is locked. When both exist, opencode (or its last run) owns them and
+    mode=ro reads them. A lone -wal (a crash leftover, no -shm) holds writes an
+    immutable read would miss, and mode=ro would create -shm: refuse it, so a
+    missed later failure can never turn into a pass.
+    """
+    try:
+        with open(db, "rb") as fh:
+            header = fh.read(20)
+    except OSError:
+        return "?mode=ro"
+    is_wal = len(header) == 20 and header[:16] == _MAGIC and header[18] == 2 and header[19] == 2
+    if not is_wal:
+        return "?mode=ro"
+    base = os.fspath(db)
+    has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
+    if has_wal and has_shm:
+        return "?mode=ro"
+    if has_wal:
+        raise UnreadableSession("opencode database has an unfinished write log; "
+                                "start and close opencode once, then try again")
+    return "?mode=ro&immutable=1"
 
 
 def _connect(db: Path) -> _Conn:
