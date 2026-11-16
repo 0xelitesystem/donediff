@@ -113,3 +113,31 @@ def test_list_ids_each_name_one_session(monkeypatch, capsys):
     for sid in ids:
         assert main(["audit", sid, "--agent", "claude-code", "--no-disk-check", "--json"]) == 0
         assert Path(json.loads(capsys.readouterr().out)["transcript"]).stem.startswith(sid)
+
+
+def test_a_report_that_cannot_be_written_is_one_line_and_exit_2(honest_transcript, tmp_path,
+                                                                 capsys):
+    """QA-025: --md at a folder or under a missing folder: no traceback, no exit 1."""
+    for bad in (tmp_path, tmp_path / "missing" / "r.md"):
+        code = main(["audit", honest_transcript, "--no-disk-check", "--md", str(bad),
+                     "--fail-under", "0"])
+        assert code == 2
+        captured = capsys.readouterr()
+        assert captured.err.startswith(f"donediff: cannot write {bad}: ")
+        assert len(captured.err.strip().splitlines()) == 1
+        assert "Traceback" not in captured.err + captured.out
+
+
+def test_standard_output_that_cannot_be_written_exits_2(honest_transcript, monkeypatch, capsys):
+    import builtins
+    real_print = builtins.print
+
+    def broken(*args, **kwargs):
+        if kwargs.get("file") is None:
+            raise BrokenPipeError(32, "Broken pipe")
+        real_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", broken)
+    assert main(["audit", honest_transcript, "--no-disk-check", "--json"]) == 2
+    monkeypatch.setattr(builtins, "print", real_print)
+    assert "cannot write the report to standard output: Broken pipe" in capsys.readouterr().err

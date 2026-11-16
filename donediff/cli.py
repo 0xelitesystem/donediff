@@ -22,7 +22,7 @@ Options:
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
   1  the score is below --fail-under N
-  2  transcript not found, or bad arguments
+  2  transcript not found, bad arguments, or a report could not be written
   3  --fail-under was given and the session has no score (no checkable claims)
 """
 
@@ -53,7 +53,7 @@ EXIT_NO_SCORE = 3  # --fail-under given and the session has no score
 _EXIT_CODES = """exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
   1  the score is below --fail-under N
-  2  transcript not found, or bad arguments
+  2  transcript not found, bad arguments, or a report could not be written
   3  --fail-under was given and the session has no score (no checkable claims)"""
 
 
@@ -88,6 +88,15 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
     return score_audit(result)
 
 
+def _cannot_write(where: str, exc: OSError) -> int:
+    reason = exc.strerror or exc.__class__.__name__
+    try:
+        print(f"donediff: cannot write {where}: {reason}", file=sys.stderr)
+    except OSError:
+        pass
+    return 2
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
@@ -96,16 +105,24 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         print(f"donediff: {exc}", file=sys.stderr)
         return 2
 
-    if args.json:
-        print(render_json(result))
-    else:
-        color = False if args.no_color else None
-        print(render_terminal(result, color=color))
-
+    # A report that cannot be written is one plain line and exit 2, never a
+    # traceback and never exit 1, which means "below --fail-under" (QA-025).
     if args.md:
-        Path(args.md).write_text(render_markdown(result), encoding="utf-8")
-        if not args.json:
+        try:
+            Path(args.md).write_text(render_markdown(result), encoding="utf-8")
+        except OSError as exc:
+            return _cannot_write(args.md, exc)
+    try:
+        if args.json:
+            print(render_json(result))
+        else:
+            color = False if args.no_color else None
+            print(render_terminal(result, color=color))
+        if args.md and not args.json:
             print(f"  markdown report written to {args.md}\n")
+        sys.stdout.flush()
+    except OSError as exc:
+        return _cannot_write("the report to standard output", exc)
 
     if args.fail_under is not None:
         if result.score is None:
