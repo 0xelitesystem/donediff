@@ -584,3 +584,116 @@ def test_audit_detect_and_list_change_nothing(tmp_path, monkeypatch, capsys):
     assert "17810000" in out and "acme-api" in out
     assert snapshot(sessions) == before
     assert path.stat().st_mtime_ns == mtime
+
+
+# -- SEC-207 / SEC-208, as tests/test_sec_207_208.py checks them for the other readers --
+
+BOMB = "[" * 200_000 + "]" * 200_000
+CLAIM = "I created `limiter.py` with the new limiter."
+DOCUMENTED_EXITS = (0, 1, 2, 3)
+
+
+def run_cli(path, agent, capsys, disk=False):
+    argv = ["audit", str(path), "--agent", agent, "--no-color"]
+    if not disk:
+        argv.append("--no-disk-check")
+    code = cli.main(argv)  # a crash raises here and fails the test
+    out, err = capsys.readouterr()
+    assert code in DOCUMENTED_EXITS
+    assert "Traceback" not in out + err
+    return code, out
+
+
+@pytest.mark.parametrize("tool", ["editor", "apply_patch"])
+def test_bomb_in_a_stringified_result_is_text_not_a_crash(tmp_path, capsys, tool):
+    doc = start()
+    tool_input = ({"path": "/home/dev/p/a.py", "new_text": "x\n"} if tool == "editor" else
+                  "*** Begin Patch\n*** Add File: /home/dev/p/a.py\n+x\n*** End Patch\n")
+    doc.assistant(calls=[mk.call("c1", tool, tool_input)])
+    doc.results(mk.result("c1", tool, BOMB))
+    doc.assistant("Still read.")
+    path = session_file(tmp_path, doc.document())
+    session = CLINE.parse(path)
+    assert [e.text for e in session.text_events()] == ["Still read."]
+    assert session.tool_calls()[0].output == BOMB
+    run_cli(path, "cline", capsys)
+    run_cli(path, "auto", capsys)
+
+
+def test_bomb_manifest_is_ignored(tmp_path, capsys):
+    path = mk.place(tmp_path / "sessions", mk.demo(), cwd=None)
+    path.with_name(f"{mk.SID}.json").write_text(BOMB, encoding="utf-8")
+    assert cline_mod.manifest(path) == {}
+    assert CLINE.parse(path).session_id == mk.SID
+    run_cli(path, "cline", capsys)
+
+
+def test_bomb_file_under_auto_is_not_a_crash(tmp_path, capsys):
+    path = tmp_path / "bomb.messages.json"
+    path.write_text(BOMB, encoding="utf-8")
+    assert not CLINE.detect(path)
+    run_cli(path, "auto", capsys)
+
+
+def _write_call(doc, call_id, tool, target):
+    if tool == "editor":
+        doc.assistant(calls=[mk.call(call_id, "editor", {"path": target, "new_text": "x = 1\n"})])
+    else:
+        doc.assistant(calls=[mk.call(call_id, "apply_patch",
+                                     f"*** Begin Patch\n*** Add File: {target}\n+x = 1\n"
+                                     "*** End Patch\n")])
+
+
+def _file_finding(result):
+    found = [f for f in result.findings
+             if f.claim.type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED)]
+    assert len(found) == 1, [f.claim for f in result.findings]
+    return found[0]
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("tool", ["editor", "apply_patch"])
+def test_write_with_no_result_does_not_verify_created(tmp_path, tool, disk):
+    target = (tmp_path / "limiter.py").as_posix()
+    doc = start()
+    _write_call(doc, "c1", tool, target)
+    doc.assistant(CLAIM)
+    path = session_file(tmp_path, doc.document())
+    write = CLINE.parse(path).tool_calls()[0]
+    assert write.tool_action == WRITE and write.result_seen is False
+    finding = _file_finding(cli.run_audit(str(path), check_disk=disk, agent="cline"))
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "no result was recorded" in finding.evidence
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("failure", ["op", "block"])
+@pytest.mark.parametrize("tool", ["editor", "apply_patch"])
+def test_failed_write_does_not_verify_created(tmp_path, tool, failure, disk):
+    target = (tmp_path / "limiter.py").as_posix()
+    doc = start()
+    _write_call(doc, "c1", tool, target)
+    if failure == "op":
+        doc.results(mk.result("c1", tool, mk.op(f"add:{target}", "permission denied", success=False)))
+    else:
+        doc.results(mk.result("c1", tool, "Tool execution failed", is_error=True))
+    doc.assistant(CLAIM)
+    path = session_file(tmp_path, doc.document())
+    write = CLINE.parse(path).tool_calls()[0]
+    assert write.result_seen and write.is_error and write.status == "error"
+    finding = _file_finding(cli.run_audit(str(path), check_disk=disk, agent="cline"))
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "did not succeed (error)" in finding.evidence
+
+
+@pytest.mark.parametrize("tool", ["editor", "apply_patch"])
+def test_no_result_then_successful_write_verifies(tmp_path, tool):
+    target = (tmp_path / "limiter.py").as_posix()
+    doc = start()
+    _write_call(doc, "c1", tool, target)
+    _write_call(doc, "c2", tool, target)
+    doc.results(mk.result("c2", tool, mk.op(f"add:{target}", "File created")))
+    doc.assistant(CLAIM)
+    path = session_file(tmp_path, doc.document())
+    finding = _file_finding(cli.run_audit(str(path), check_disk=False, agent="cline"))
+    assert finding.verdict is Verdict.VERIFIED

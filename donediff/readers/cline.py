@@ -65,7 +65,6 @@ like every other transcript path.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
@@ -74,6 +73,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
+from ..parser import loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 from .codex import _UNSAFE, argv_command, clean_path, parse_patch
@@ -142,10 +142,7 @@ def _read_json(path: Path, limit: int):
         data = fh.read(limit + 1)
     if len(data) > limit:
         raise ValueError("too large")
-    try:
-        return json.loads(data.decode("utf-8-sig", errors="replace"))
-    except RecursionError:
-        raise ValueError("nested too deep") from None
+    return loads(data.decode("utf-8-sig", errors="replace"))  # too deep: ValueError (SEC-207)
 
 
 def read_document(path: Path) -> dict | None:
@@ -227,7 +224,7 @@ def operations(content, from_text: bool = False) -> tuple[list[dict], str]:
         if not from_text:
             return [], content
         try:
-            parsed = json.loads(content) if content.lstrip()[:1] in ("{", "[") else None
+            parsed = loads(content) if content.lstrip()[:1] in ("{", "[") else None
         except ValueError:
             parsed = None
         if parsed is None:
