@@ -10,3 +10,7 @@ is in LICENSE-qwen-code.txt beside this file. Copied unmodified, byte for byte.
 It is a hand-written contract test case from the Qwen Code project ("session-test",
 "/workspace/project"), used here only to check that donediff's Qwen Code reader parses
 Qwen's own published record shape. It is not a recording of any real session.
+
+Attribution: contract-chat-records.jsonl: Qwen Code contract test fixture, copied unmodified from
+github.com/QwenLM/qwen-code (commit 516e963f7a401053c18c23b32b007ec1fb70848f), Apache License 2.0;
+Copyright 2025 Google LLC; Copyright 2025 Qwen. Licensed fixture, not a real run.
