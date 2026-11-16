@@ -645,6 +645,7 @@ def parse_session(path: SessionPath) -> Session:
 
 class OpencodeReader:
     name = "opencode"
+    label = "opencode"  # the agent as messages name it
     id_width = 12  # `list` shows at least this much of a session id
 
     @property

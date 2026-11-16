@@ -51,6 +51,10 @@ class UnreadableSession(OSError):
     """The session file exists but this Python cannot read it (the message says why)."""
 
 
+class NotATranscript(ValueError):
+    """The file holds no record the reader could read (the message says what to try)."""
+
+
 class AmbiguousSession(LookupError):
     """An id prefix matches more than one session (the message lists them)."""
 
@@ -117,6 +121,7 @@ def short_ids(candidates: list, shown: list, keys, width: int = _SHORTEST_ID) ->
 
 class Reader(Protocol):
     name: str  # the --agent value, e.g. "claude-code"
+    label: str  # the agent as messages name it, e.g. "Claude Code"
     location: str  # where its sessions live, as messages name it
 
     def discover(self, project_filter: str | None = None) -> list[Path]:

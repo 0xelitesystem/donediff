@@ -509,6 +509,7 @@ def parse_session(path: str | Path) -> Session:
 
 class ClineReader:
     name = "cline"
+    label = "Cline"  # the agent as messages name it
 
     @property
     def location(self) -> str:

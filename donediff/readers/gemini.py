@@ -527,6 +527,7 @@ def _full_id(path: Path) -> tuple[str, ...]:
 
 class GeminiReader:
     name = "gemini"
+    label = "Gemini CLI"  # the agent as messages name it
 
     @property
     def location(self) -> str:

@@ -157,3 +157,35 @@ def test_the_version_matches_the_newest_changelog_heading(capsys):
     except SystemExit:
         pass
     assert capsys.readouterr().out.strip() == f"donediff {__version__}"
+
+
+def test_a_file_that_is_not_a_transcript_says_so(tmp_path, capsys):
+    """QA-027: an empty file, invalid JSON lines and a .txt file got exit 0 and
+    "nothing to audit"; they now say what the file is not, and exit 2."""
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("this is not json\n{broken\n", encoding="utf-8")
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    text = tmp_path / "notes.txt"
+    text.write_text("meeting notes\n", encoding="utf-8")
+    cases = ((bad, "(2 line(s) could not be read)"), (empty, "(the file is empty)"),
+             (text, "(1 line(s) could not be read)"))
+    for path, why in cases:
+        assert main(["audit", str(path), "--no-disk-check"]) == 2
+        err = capsys.readouterr().err
+        assert err == f"donediff: {path} does not look like a Claude Code transcript {why}\n"
+
+
+def test_a_wrong_agent_gets_a_hint(honest_transcript, capsys):
+    assert main(["audit", honest_transcript, "--agent", "codex", "--no-disk-check"]) == 2
+    err = capsys.readouterr().err
+    assert "does not look like a Codex transcript" in err
+    assert err.rstrip().endswith("Try --agent auto, or --agent claude-code, which reads it")
+
+
+def test_unreadable_lines_count_in_the_scope(honest_transcript, tmp_path, capsys):
+    mixed = tmp_path / "mixed.jsonl"
+    original = Path(honest_transcript).read_text(encoding="utf-8")
+    mixed.write_text("this is not json\n" + original + "{broken\n", encoding="utf-8")
+    assert main(["audit", str(mixed), "--no-disk-check", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["scope"]["unrecognised_records"] == 2

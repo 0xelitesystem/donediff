@@ -859,6 +859,7 @@ def parse_rollout(path: str | Path) -> Session:
 
 class CodexReader:
     name = "codex"
+    label = "Codex"  # the agent as messages name it
 
     @property
     def location(self) -> str:

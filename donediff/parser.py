@@ -229,8 +229,10 @@ def parse_transcript(path: str | Path) -> Session:
             try:
                 record = loads(line)
             except ValueError:
+                session.unrecognised += 1  # a line that is not JSON: counted in the scope
                 continue
             if not isinstance(record, dict):
+                session.unrecognised += 1
                 continue
             rtype = record.get("type")
             timestamp = str(record.get("timestamp", ""))

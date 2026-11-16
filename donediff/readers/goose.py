@@ -688,6 +688,7 @@ def _row(state: _Parse, rowid, role, created, metadata, raw) -> None:
 
 class GooseReader:
     name = "goose"
+    label = "Goose"  # the agent as messages name it
     id_width = 12  # `list` shows at least this much of a session id
 
     @property

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import AmbiguousSession, Reader, UnreadableSession, short_ids
+from .base import AmbiguousSession, NotATranscript, Reader, UnreadableSession, short_ids
 from .claude_code import CLAUDE_CODE
 from .cline import CLINE
 from .codex import CODEX
@@ -29,8 +29,8 @@ from .goose import GOOSE
 READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI, QWEN, CLINE, GOOSE)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
-__all__ = ["AGENT_CHOICES", "READERS", "AmbiguousSession", "Reader", "UnreadableSession",
-           "select", "select_for_list", "short_ids"]
+__all__ = ["AGENT_CHOICES", "READERS", "AmbiguousSession", "NotATranscript", "Reader",
+           "UnreadableSession", "not_a_transcript", "select", "select_for_list", "short_ids"]
 
 
 def _named(agent: str) -> Reader:
@@ -65,6 +65,27 @@ def select(agent: str = "auto", target: str | None = None,
             continue
         return reader
     return READERS[0]
+
+
+def not_a_transcript(reader: Reader, path: Path, unreadable: int,
+                     agent: str = "auto") -> NotATranscript:
+    """The plain message for a file this reader found nothing in (QA-027)."""
+    try:
+        empty = Path(path).stat().st_size == 0
+    except OSError:
+        empty = False
+    if empty:
+        why = "the file is empty"
+    elif unreadable:
+        why = f"{unreadable} line(s) could not be read"
+    else:
+        why = "no record in it could be read"
+    message = f"{path} does not look like a {reader.label} transcript ({why})"
+    if agent != "auto":
+        other = next((r for r in READERS if r is not reader and r.detect(Path(path))), None)
+        message += (f". Try --agent auto, or --agent {other.name}, which reads it"
+                    if other else ". Try --agent auto")
+    return NotATranscript(message)
 
 
 def select_for_list(agent: str = "auto", project: str | None = None) -> Reader:

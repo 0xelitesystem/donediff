@@ -22,7 +22,8 @@ Options:
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
   1  the score is below --fail-under N
-  2  transcript not found, bad arguments, or a report could not be written
+  2  transcript not found or not a transcript, bad arguments, or a report
+     could not be written
   3  --fail-under was given and the session has no score (no checkable claims)
 """
 
@@ -39,8 +40,8 @@ from . import __version__
 from .claims import extract_claims
 from .gaming import detect_gaming
 from .models import AuditResult
-from .readers import (AGENT_CHOICES, AmbiguousSession, UnreadableSession, select,
-                      select_for_list, short_ids)
+from .readers import (AGENT_CHOICES, AmbiguousSession, NotATranscript, UnreadableSession,
+                      not_a_transcript, select, select_for_list, short_ids)
 from .report import render_json, render_markdown, render_terminal
 from .score import score_audit
 from .verify import verify_claims
@@ -53,7 +54,8 @@ EXIT_NO_SCORE = 3  # --fail-under given and the session has no score
 _EXIT_CODES = """exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
   1  the score is below --fail-under N
-  2  transcript not found, bad arguments, or a report could not be written
+  2  transcript not found or not a transcript, bad arguments, or a report
+     could not be written
   3  --fail-under was given and the session has no score (no checkable claims)"""
 
 
@@ -69,6 +71,8 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
     reader = select(agent, target, project)
     path = reader.resolve(target, project)
     session = reader.parse(path)
+    if not session.events and not reader.detect(path):
+        raise not_a_transcript(reader, path, session.unrecognised, agent)
     session.main_only = main_only  # the scope says --main-only only when it was given
     session.scan.files = 1
     try:
@@ -101,7 +105,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
                            main_only=args.main_only, agent=args.agent)
-    except (FileNotFoundError, UnreadableSession, AmbiguousSession) as exc:
+    except (FileNotFoundError, UnreadableSession, AmbiguousSession, NotATranscript) as exc:
         print(f"donediff: {exc}", file=sys.stderr)
         return 2
 

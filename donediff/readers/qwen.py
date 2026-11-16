@@ -445,6 +445,7 @@ def parse_session(path: str | Path) -> Session:
 
 class QwenReader:
     name = "qwen"
+    label = "Qwen Code"  # the agent as messages name it
 
     @property
     def location(self) -> str:

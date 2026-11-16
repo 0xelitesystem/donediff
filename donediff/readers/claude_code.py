@@ -49,6 +49,7 @@ def first_record(path: Path, limit: int = _DETECT_LIMIT) -> dict | None:
 
 class ClaudeCodeReader:
     name = "claude-code"
+    label = "Claude Code"  # the agent as messages name it
     location = "~/.claude/projects"
 
     def discover(self, project_filter: str | None = None) -> list[Path]:
