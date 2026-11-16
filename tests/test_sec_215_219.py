@@ -85,3 +85,34 @@ def test_sessions_one_after_another_are_not_a_rewrite(tmp_path):
     b.shell("pytest -q", "12 passed", 0)
     b.say("All tests pass.")
     assert pass_finding(b.close() + "#20260610_7").verdict is Verdict.VERIFIED
+
+
+# -- SEC-216: a relative or drive-relative APPDATA / home is never used as-is ------
+
+def _env(monkeypatch, home, appdata=None, xdg=None):
+    monkeypatch.delenv("GOOSE_PATH_ROOT", raising=False)
+    for var in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(var, str(home))
+    for var, value in (("APPDATA", appdata), ("XDG_DATA_HOME", xdg)):
+        if value is None:
+            monkeypatch.delenv(var, raising=False)
+        else:
+            monkeypatch.setenv(var, value)
+
+
+def test_relative_appdata_falls_back_to_the_absolute_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(gs.sys, "platform", "win32")
+    for appdata in (r"rel\appdata", "rel/appdata", "C:relative"):
+        _env(monkeypatch, tmp_path / "home", appdata=appdata)
+        db = gs.database_path()
+        assert db == (tmp_path / "home" / "AppData" / "Roaming" / "Block" / "goose" / "data"
+                      / "sessions" / "sessions.db"), appdata
+        assert db.is_absolute()
+
+
+def test_relative_home_is_refused_not_resolved(tmp_path, monkeypatch):
+    for platform, kw in (("win32", {"appdata": r"rel\appdata"}), ("linux", {"xdg": "rel/xdg"})):
+        monkeypatch.setattr(gs.sys, "platform", platform)
+        _env(monkeypatch, "relhome", **kw)
+        assert gs.data_dir() is None and gs.database_path() is None, platform
+        assert gs.GOOSE.discover() == []

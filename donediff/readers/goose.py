@@ -105,18 +105,25 @@ def _absolute(value: str | None) -> Path | None:
 
 
 def data_dir() -> Path | None:
-    """Goose's data folder, or None when it would be on a remote share."""
+    """Goose's data folder, or None when it would be on a remote share.
+
+    A relative or drive-relative APPDATA / XDG_DATA_HOME is ignored, and a
+    result that is still not absolute (a relative home) is refused, so it
+    never resolves against the working folder (SEC-216).
+    """
     root = os.environ.get("GOOSE_PATH_ROOT")
     if _absolute(root) is not None:
         result = Path(root) / "data"
     elif sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else Path(os.path.expanduser("~")) / "AppData" / "Roaming"
+        appdata = _absolute(os.environ.get("APPDATA"))
+        base = appdata or Path(os.path.expanduser("~")) / "AppData" / "Roaming"
         result = base / "Block" / "goose" / "data"
     else:
         xdg = _absolute(os.environ.get("XDG_DATA_HOME"))
         result = (xdg or Path(os.path.expanduser("~")) / ".local" / "share") / "goose"
-    return None if is_remote_path(os.fspath(result)) else result
+    if is_remote_path(os.fspath(result)) or not result.is_absolute():
+        return None
+    return result
 
 
 def database_path() -> Path | None:
