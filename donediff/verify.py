@@ -372,6 +372,10 @@ def _write_failed(event: Event) -> bool:
 
 def _write_why(event: Event) -> str:
     """Why `_write_failed` is true, as the end of a sentence."""
+    if (event.status or "").lower() == "outcome unknown":
+        # Codex code mode: the script hid whether the call ran (is_error stays
+        # True, so it is still no evidence the file was written).
+        return "has an unknown outcome: the log does not show whether it ran"
     if event.is_error or (event.status or "").lower() in _FAILED_STATUS:
         return f"did not succeed ({event.status or 'error'})"
     if event.rewound:

@@ -87,8 +87,6 @@ def test_rejected_patch_is_no_write(tmp_path):
     assert event.status == "script failed" and event.result_seen
 
 
-@pytest.mark.skipif(not hasattr(verify, "_write_failed"),
-                    reason="needs the SEC-208 engine fix (branch sec-207-208)")
 def test_rejected_patch_never_verifies_the_file_claim(tmp_path):
     clock, lines = start()
     lines += [mk.exec_call(clock, "c1", patch_js()),
@@ -96,6 +94,35 @@ def test_rejected_patch_never_verifies_the_file_claim(tmp_path):
               say(clock, "I created `hello.py` and it works.")]
     result = audit(tmp_path, lines)
     assert result.findings and all(f.verdict is not Verdict.VERIFIED for f in result.findings)
+    assert any("did not succeed (script failed)" in f.evidence for f in result.findings)
+
+
+def test_write_with_no_output_record_never_verifies(tmp_path):
+    """SEC-208: an exec with no result has result_seen False, so verify._write_failed holds."""
+    clock, lines = start()
+    lines += [mk.exec_call(clock, "c1", patch_js()),
+              say(clock, "I created `hello.py`.")]
+    [event] = parse(tmp_path, lines).tool_calls()
+    assert event.result_seen is False and verify._write_failed(event)
+    result = audit(tmp_path, lines)
+    assert result.findings and all(f.verdict is not Verdict.VERIFIED for f in result.findings)
+    assert any("no result was recorded" in f.evidence for f in result.findings)
+
+
+def test_unknown_outcome_wording(tmp_path):
+    """A write the script hides reads 'unknown outcome', never 'did not succeed'."""
+    clock, lines = start()
+    source = f"try {{ await tools.apply_patch({mk.js(PATCH)}); }} catch (e) {{ text('ok'); }}"
+    lines += [mk.exec_call(clock, "c1", source), mk.exec_result(clock, "c1", DONE, []),
+              say(clock, "I created `hello.py`.")]
+    [event] = [e for e in parse(tmp_path, lines).tool_calls() if e.tool_action == WRITE]
+    assert event.is_error and verify._write_failed(event)
+    assert verify._write_why(event) == (
+        "has an unknown outcome: the log does not show whether it ran")
+    result = audit(tmp_path, lines)
+    assert result.findings and all(f.verdict is not Verdict.VERIFIED for f in result.findings)
+    assert not any("did not succeed" in f.evidence for f in result.findings)
+    assert any("has an unknown outcome" in f.evidence for f in result.findings)
 
 
 def test_update_and_delete_paths(tmp_path):
@@ -210,7 +237,7 @@ def test_completed_script_that_branches_is_uncertain(tmp_path, source):
     clock, lines = start()
     lines += [mk.exec_call(clock, "c1", source), mk.exec_result(clock, "c1", DONE, [])]
     write_event = [e for e in parse(tmp_path, lines).tool_calls() if e.tool_action == WRITE][0]
-    assert write_event.is_error and write_event.status == "outcome uncertain"
+    assert write_event.is_error and write_event.status == "outcome unknown"
 
 
 def test_failed_multi_call_marks_every_write(tmp_path):

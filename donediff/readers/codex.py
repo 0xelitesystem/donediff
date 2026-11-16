@@ -93,7 +93,7 @@ _HEADER_LINE = re.compile(
 _EXITED = re.compile(r"^(?:Process exited with code|Exit code:) (-?\d+)$", re.MULTILINE)
 _RUNNING = re.compile(r"^Process running with session ID (\S+)$", re.MULTILINE)
 _TRUNCATED = "... command output truncated for persistence ..."
-UNCERTAIN = "outcome uncertain"  # a code-mode call in a script that branched or held several
+UNCERTAIN = "outcome unknown"  # a code-mode call in a script that branched or held several
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]")
 
 
