@@ -331,3 +331,114 @@ def test_failed_write_does_not_verify_report_path(tmp_path, disk):
     found = [f for f in result.findings if f.claim.type is ClaimType.PATH_WRITTEN]
     assert len(found) == 1
     assert found[0].verdict is Verdict.UNVERIFIED and "did not succeed" in found[0].evidence
+
+
+# -- SEC-208 follow-up: a write with no recorded result is no evidence ---------
+
+def _claude_code_no_result(tmp_path):
+    records = [
+        assistant_tool("w1", "Write", {"file_path": f"{tmp_path}/limiter.py", "content": "x"}),
+        assistant_text(CLAIM),
+    ]
+    return write_jsonl(tmp_path / "s.jsonl", records), "claude-code"
+
+
+def _qwen_no_result(tmp_path):
+    chat = mq.Chat()
+    chat.user("Add a limiter.")
+    chat.assistant(calls=[mq.call("c1", "write_file", {"file_path": f"{tmp_path}/limiter.py",
+                                                        "content": "x = 1\n"})])
+    chat.assistant(CLAIM)
+    return mq.write(tmp_path / f"{mq.SID}.jsonl", chat.records), "qwen"
+
+
+def _opencode_waiting(tmp_path, schema, status):
+    b = mo.Builder(tmp_path / f"{schema}.db", schema).session("ses_t0001", directory=str(tmp_path))
+    b.user("Add a limiter.")
+    b.tool("write", {mo.PATH_KEY[schema]: f"{tmp_path}/limiter.py", "content": "x = 1\n"},
+           status=status)
+    b.say(CLAIM)
+    return b.close(), "opencode"
+
+
+NO_RESULT = [
+    ("claude-code", _claude_code_no_result),
+    *[(f"gemini-{s}", lambda p, s=s: _gemini(p, s))
+      for s in ("awaiting_approval", "executing", "scheduled", "validating")],
+    ("qwen", _qwen_no_result),
+    *[(f"opencode-{v}-{s}", lambda p, v=v, s=s: _opencode_waiting(p, v, s))
+      for v in ("v1", "v2") for s in ("pending", "running")],
+]
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("name,build", NO_RESULT, ids=[n[0] for n in NO_RESULT])
+def test_write_with_no_result_does_not_verify_created(tmp_path, name, build, disk):
+    target, agent = build(tmp_path)
+    finding = _file_finding(cli.run_audit(str(target), check_disk=disk, agent=agent))
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "no result was recorded" in finding.evidence
+
+
+def test_no_result_cases_are_ten():
+    assert len(NO_RESULT) == 10
+
+
+@pytest.mark.parametrize("agent", ("claude-code", "gemini"))
+def test_no_result_then_successful_write_verifies(tmp_path, agent):
+    if agent == "claude-code":
+        records = [
+            assistant_tool("w1", "Write", {"file_path": f"{tmp_path}/limiter.py", "content": "x"}),
+            assistant_tool("w2", "Write", {"file_path": f"{tmp_path}/limiter.py", "content": "x"}),
+            tool_result("w2", "ok"),
+            assistant_text(CLAIM),
+        ]
+        target = write_jsonl(tmp_path / "s.jsonl", records)
+    else:
+        clock = mg.Clock()
+        args = {"file_path": f"{tmp_path}/limiter.py", "content": "x = 1\n"}
+        records = [mg.meta(), mg.user(clock, "u1", "Add a limiter."),
+                   mg.gemini(clock, "g1", "", [mg.call(clock, "c1", "write_file", args,
+                                                       "awaiting_approval")]),
+                   mg.gemini(clock, "g2", "", [mg.call(clock, "c2", "write_file", args, "success",
+                                                       mg.output("c2", "write_file", "ok"))]),
+                   mg.gemini(clock, "g3", CLAIM)]
+        target = mg.write(tmp_path / "session-2026-06-10T12-00-6f1c2d3e.jsonl", records)
+    finding = _file_finding(cli.run_audit(str(target), check_disk=False, agent=agent))
+    assert finding.verdict is Verdict.VERIFIED
+
+
+def _report_session(tmp_path, records):
+    for record in records:
+        record["cwd"] = str(tmp_path)
+    path = write_jsonl(tmp_path / "s.jsonl", records)
+    return path
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("via", ("write", "shell"))
+def test_no_result_write_does_not_verify_report_path(tmp_path, disk, via):
+    """'The report is at <path>' (verify._verify_path_written): a Write call or
+    a shell redirect with no recorded result is no evidence either."""
+    if via == "write":
+        call = assistant_tool("w1", "Write", {"file_path": str(tmp_path / "out" / "audit.md"),
+                                               "content": "ok"})
+    else:
+        call = assistant_tool("b1", "Bash", {"command": "echo ok > out/audit.md"})
+    path = _report_session(tmp_path, [call, assistant_text("The report is at `out/audit.md`.")])
+    result = cli.run_audit(path, check_disk=disk, agent="claude-code")
+    found = [f for f in result.findings if f.claim.type is ClaimType.PATH_WRITTEN]
+    assert len(found) == 1
+    assert found[0].verdict is Verdict.UNVERIFIED
+    assert "no result was recorded" in found[0].evidence
+
+
+def test_shell_redirect_with_result_still_counts_for_report_path(tmp_path):
+    path = _report_session(tmp_path, [
+        assistant_tool("b1", "Bash", {"command": "echo ok > out/audit.md"}),
+        tool_result("b1", ""),
+        assistant_text("The report is at `out/audit.md`."),
+    ])
+    result = cli.run_audit(path, check_disk=False, agent="claude-code")
+    found = [f for f in result.findings if f.claim.type is ClaimType.PATH_WRITTEN]
+    assert len(found) == 1 and found[0].verdict is Verdict.VERIFIED

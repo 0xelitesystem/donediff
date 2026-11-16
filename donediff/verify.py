@@ -361,21 +361,28 @@ _FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejecte
 
 
 def _write_failed(event: Event) -> bool:
-    """A write or edit the log says did not succeed, or one a rewind left
-    behind (SEC-210). It stays an edit for staleness (code may have changed:
-    errs safe), but is no evidence that the file was written."""
-    return (event.is_error or event.rewound
+    """A write or edit the log does not show succeeding: it failed, a rewind
+    left it behind (SEC-210), or no result was recorded (awaiting approval,
+    still running, CLI stopped: SEC-208). It stays an edit for staleness
+    (code may have changed: errs safe), but is no evidence that the file was
+    written. result_seen None (a reader that does not track results) counts."""
+    return (event.is_error or event.rewound or event.result_seen is False
             or (event.status or "").lower() in _FAILED_STATUS)
+
+
+def _write_why(event: Event) -> str:
+    """Why `_write_failed` is true, as the end of a sentence."""
+    if event.is_error or (event.status or "").lower() in _FAILED_STATUS:
+        return f"did not succeed ({event.status or 'error'})"
+    if event.rewound:
+        return "was rewound"
+    return "did not finish: no result was recorded"
 
 
 def _failed_write(claim: Claim, ctx: _Context, writes: list[Event], name: str) -> Finding:
     last = writes[-1]
-    if last.rewound and not last.is_error:
-        return _found(claim, ctx, Verdict.UNVERIFIED,
-                      f"the {last.tool_name} call for `{name}` was rewound", last)
     return _found(claim, ctx, Verdict.UNVERIFIED,
-                  f"the {last.tool_name} call for `{name}` did not succeed"
-                  f" ({last.status or 'error'})", last)
+                  f"the {last.tool_name} call for `{name}` {_write_why(last)}", last)
 
 
 def _rewound_cap(timeline: Timeline, kind: ClaimType, run_key: tuple, ctx: _Context,
@@ -523,12 +530,21 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
               if e.file_path and _same_file(e.file_path, e.cwd or session.cwd,
                                             target, session.cwd)]
     shell_paths: list[tuple[Event, str]] = []
+    unfinished: list[Event] = []  # shell writes the log does not show succeeding (SEC-208)
     for event in session.events[:claim.event_index]:
         if event.kind is EventKind.TOOL_CALL and event.command and not _command_failed(event):
             for path in _SHELL_WRITE.findall(event.command):
                 if _same_file(path, event.cwd or session.cwd, target, session.cwd):
-                    shell_paths.append((event, path))
+                    if _write_failed(event):
+                        unfinished.append(event)
+                    else:
+                        shell_paths.append((event, path))
     if not writes and not shell_paths:
+        if unfinished:
+            last = unfinished[-1]
+            return _found(claim, ctx, Verdict.UNVERIFIED,
+                          f"`{_short(last.command)}` writes `{target}`, but the run"
+                          f" {_write_why(last)}", last)
         return _unverified(claim, ctx, f"no write to `{target}` appears before the claim")
     done = [w for w in writes if not _write_failed(w)]
     if writes and not done and not shell_paths:
