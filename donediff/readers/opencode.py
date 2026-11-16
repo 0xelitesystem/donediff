@@ -720,7 +720,6 @@ class OpencodeReader:
         return parse_session(path)
 
     def attach_sources(self, session: Session) -> Session:
-        session.main_only = False  # the scope line then says no sub-agent sessions were read
         return session  # sub-agent sessions (parent_id) are not read yet
 
 

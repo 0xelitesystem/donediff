@@ -918,7 +918,6 @@ class CodexReader:
         return parse_rollout(path)
 
     def attach_sources(self, session: Session) -> Session:
-        session.main_only = False  # not --main-only: the scope line must not say so
         return session  # no sub-agent transcripts are read for Codex yet
 
 

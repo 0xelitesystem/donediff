@@ -200,7 +200,7 @@ class Session:
     prompt_marks: list[tuple[int, int]] = field(default_factory=list)
     deliveries: list[Delivery] = field(default_factory=list)
     sources: list[Source] = field(default_factory=list)
-    main_only: bool = True
+    main_only: bool = False  # True only when the audit was asked for --main-only
     scan: ScanStats = field(default_factory=ScanStats)
     unrecognised: int = 0  # log lines a reader could not read, skipped (shown in scope)
 

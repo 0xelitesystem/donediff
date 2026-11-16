@@ -787,7 +787,7 @@ class GooseReader:
         return parse_session(path)
 
     def attach_sources(self, session: Session) -> Session:
-        session.main_only = False  # sub-agent sessions (parent_session_id) are not read yet
+        # sub-agent sessions (parent_session_id) are not read yet
         return session
 
 

@@ -66,6 +66,7 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
     reader = select(agent, target, project)
     path = reader.resolve(target, project)
     session = reader.parse(path)
+    session.main_only = main_only  # the scope says --main-only only when it was given
     session.scan.files = 1
     try:
         session.scan.bytes = path.stat().st_size

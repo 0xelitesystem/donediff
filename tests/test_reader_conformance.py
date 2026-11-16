@@ -168,3 +168,22 @@ def test_no_evidence_status_never_succeeds(status):
         event = Event(kind=K.TOOL_CALL, index=0, tool_name="Write", status=status,
                       result_seen=True, exit_code=exit_code)
         assert evidence_of_success(event)[0] is False
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_main_only_is_reported_only_when_given(tmp_path, name):
+    """QA-023: every reader, and any new one, says --main-only only when it was passed."""
+    import json
+
+    from donediff.report import render_json, scope_line
+    module = BUILDERS[name]
+    project = tmp_path / "project"
+    project.mkdir()
+    target = module.build(project, SUCCESS, FILE)
+    default = cli.run_audit(str(target), check_disk=False, agent=module.AGENT)
+    assert default.session.main_only is False
+    assert "--main-only" not in scope_line(default.session)
+    assert json.loads(render_json(default))["scope"]["main_only"] is False
+    asked = cli.run_audit(str(target), check_disk=False, agent=module.AGENT, main_only=True)
+    assert asked.session.main_only is True
+    assert "--main-only" in scope_line(asked.session)
