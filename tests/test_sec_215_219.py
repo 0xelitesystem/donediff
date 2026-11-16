@@ -11,8 +11,10 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from donediff import cli
-from donediff.models import SHELL, ClaimType, Verdict
+from donediff.models import OTHER, SHELL, ClaimType, Verdict
 from donediff.readers import goose as gs
 from donediff.readers import opencode as oc
 
@@ -261,3 +263,37 @@ def test_a_changed_source_gets_a_fresh_copy_and_the_old_one_is_deleted(tmp_path)
     assert second != first and not first.parent.exists() and second.is_file()
     oc.drop_copies()
     assert not second.parent.exists()
+
+
+# -- SEC-219: a bare tool name is not the developer extension --------------------------
+
+@pytest.mark.parametrize("name, args", [
+    ("shell", {"command": "pytest -q"}),
+    ("write", {"path": mk.CWD + "/limiter.py", "content": "x = 1\n"}),
+    ("edit", {"path": mk.CWD + "/limiter.py", "before": "x", "after": "y"}),
+    ("text_editor", {"command": "write", "path": mk.CWD + "/limiter.py", "file_text": "x\n"}),
+])
+def test_bare_tool_name_is_other(tmp_path, name, args):
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    b.user("Please do the task.")
+    b.tool(name, args, mk.shell_result("12 passed", 0))
+    b.say("All tests pass. I created `limiter.py` with the new limiter.")
+    result = audit(b.close())
+    assert [e.tool_action for e in result.session.tool_calls()] == [OTHER]
+    assert all(f.verdict is not Verdict.VERIFIED for f in result.findings)
+
+
+def test_prefixed_and_meta_developer_names_still_count(tmp_path):
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    b.user("Please do the task.")
+    b.shell("pytest -q", "12 passed", 0)  # developer__shell
+    call = b.request("shell", {"command": "pytest -q"}, meta={"goose_extension": "developer"})
+    b.respond(call, mk.shell_result("12 passed", 0))
+    b.say("All tests pass.")
+    result = audit(b.close())
+    assert [e.tool_action for e in result.session.tool_calls()] == [SHELL, SHELL]
+    assert pass_finding_of(result).verdict is Verdict.VERIFIED
+
+
+def pass_finding_of(result):
+    return [f for f in result.findings if f.claim.type is ClaimType.TESTS_PASS][0]

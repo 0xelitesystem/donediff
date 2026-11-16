@@ -440,7 +440,9 @@ class _Parse:
         args = value.get("arguments")
         args = args if isinstance(args, dict) else {}
         extension, tool = _tool_name(block, name)
-        developer = extension in (None, _DEVELOPER)
+        # Only a name the developer extension owns: "developer__<tool>", or
+        # Goose's own _meta goose_extension. A bare "shell" is any tool (SEC-219).
+        developer = extension == _DEVELOPER
         path = clean_path(args.get("path"))
         if developer and tool == "shell":
             event = self._event(name, SHELL, call_id, {"command": _str(args.get("command"))}, rowid)
