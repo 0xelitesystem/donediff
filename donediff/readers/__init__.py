@@ -3,11 +3,12 @@
 How "auto" picks a reader:
 - a target that is a file: the first reader whose detect() is True for it,
   else Claude Code (an empty or unknown file reads as before);
-- "latest": Claude Code, unless it has no sessions and Codex has some;
-- a session-id prefix: Claude Code when one of its sessions matches, else
-  Codex when one of its sessions matches, else Claude Code (whose "not
-  found" message is shown);
-- `list`: Claude Code, unless it has no sessions and Codex has some.
+- "latest": Claude Code, unless it has no sessions; then the first of Codex
+  and opencode that has some;
+- a session-id prefix: the first of Claude Code, Codex and opencode with a
+  matching session, else Claude Code (whose "not found" message is shown);
+  an opencode database path with "#<session-id prefix>" goes to opencode;
+- `list`: as "latest".
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from pathlib import Path
 from .base import Reader, UnreadableSession
 from .claude_code import CLAUDE_CODE
 from .codex import CODEX
+from .opencode import OPENCODE
 
-READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX)
+READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
 __all__ = ["AGENT_CHOICES", "READERS", "Reader", "UnreadableSession", "select",
@@ -33,9 +35,9 @@ def _named(agent: str) -> Reader:
 
 
 def _by_sessions(project: str | None) -> Reader:
-    if CLAUDE_CODE.discover(project) or not CODEX.discover(project):
+    if CLAUDE_CODE.discover(project):
         return CLAUDE_CODE
-    return CODEX
+    return next((r for r in READERS[1:] if r.discover(project)), CLAUDE_CODE)
 
 
 def select(agent: str = "auto", target: str | None = None,

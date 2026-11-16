@@ -126,3 +126,11 @@ def stale_transcript(tmp_path):
 def _no_real_codex_sessions(monkeypatch, tmp_path_factory):
     """Point CODEX_HOME at an empty folder so no test sees a real Codex log."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path_factory.mktemp("codex-home")))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_opencode_db(monkeypatch, tmp_path_factory):
+    """Point OPENCODE_DB at a missing file in an empty folder so no test sees a real opencode DB."""
+    empty = tmp_path_factory.mktemp("opencode-data")
+    monkeypatch.setenv("OPENCODE_DB", str(empty / "opencode.db"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(empty))
