@@ -87,6 +87,10 @@ def signals_for_event(event: Event, source: str = "main") -> list[GamingSignal]:
     signals: list[GamingSignal] = []
 
     def add(kind: str, severity: GamingSeverity, description: str) -> None:
+        if event.rewound:
+            # A rewind left the call behind (SEC-210): still a signal (the rewind
+            # does not prove the change was undone on disk), but the reader is told.
+            description += " (rewound)"
         signals.append(GamingSignal(kind=kind, severity=severity,
                                     description=description,
                                     event_index=index, source=source))

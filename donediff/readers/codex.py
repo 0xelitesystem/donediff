@@ -503,6 +503,11 @@ class _Parse:
         for event in cell.events:
             event.result_seen = True
             event.status = status
+            if event.tool_action == SHELL and state == code_mode.COMPLETED:
+                # A nested command with a non-zero exit does not throw (it returns
+                # its exit code to the script), so "Script completed" says nothing
+                # about the command itself (SEC-213).
+                event.status = UNCERTAIN
             event.output = text
             # Never an exit code, never hints from printed text: a shell run
             # reads as status only, whatever the script or command printed.

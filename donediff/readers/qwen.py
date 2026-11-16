@@ -80,6 +80,7 @@ _CLAUDE_KEYS = ("isSidechain", "userType", "toolUseResult", "payload")
 _TRAILER = re.compile(
     r"^Exit Code: (-?\d+|\(none\))\nSignal: [^\n]*\nProcess Group PGID: [^\n]*$", re.M)
 _FINISHED = ("Command: ", "Directory: ")  # how a finished (not cancelled) result starts
+_OUTPUT = re.compile(r"^Output: ", re.M)  # the line that opens the output body
 _BACKGROUND = "Background shell started."
 
 
@@ -185,11 +186,15 @@ def shell_text(text: str) -> tuple[int | None, str]:
 
     Read only from a finished result (it starts "Command: " or "Directory: ")
     whose last trailer block is the one shell.ts writes; "(none)" is no code.
+    The trailer must follow the last "Output: " line: shell.ts writes it after
+    the whole output, so one with output after it was printed by the command
+    (SEC-211).
     """
     if not text.startswith(_FINISHED):
         return None, text
     matches = list(_TRAILER.finditer(text))
-    if not matches:
+    outputs = list(_OUTPUT.finditer(text))
+    if not matches or not outputs or matches[-1].start() < outputs[-1].end():
         return None, text
     last = matches[-1]
     code = None if last.group(1) == "(none)" else int(last.group(1))
@@ -369,6 +374,8 @@ class _Build:
         failed_outcome = structured and info["resultDisplay"].get("outcome") == "failed"
         if not structured:
             code, body = shell_text(text)
+            if status == "cancelled":
+                code = None  # a cancelled run never takes an exit code from its text (SEC-211)
         elif not body:
             body = shell_text(text)[1]
         event.output = body

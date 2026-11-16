@@ -146,10 +146,12 @@ def test_shell_success_is_status_only(tmp_path):
               say(clock, "All tests pass.")]
     [run] = parse(tmp_path, lines).tool_calls()
     assert run.tool_action == SHELL and run.command == "python -m pytest -q"
-    assert run.cwd == "C:/work/demo" and run.exit_code is None and run.status == "completed"
+    # "Script completed" says nothing about a nested command's exit (SEC-213).
+    assert run.cwd == "C:/work/demo" and run.exit_code is None and run.status == "outcome unknown"
+    assert not run.is_error
     [finding] = audit(tmp_path, lines).findings
     assert finding.verdict is Verdict.UNVERIFIED
-    assert "the log has a status only (completed)" in finding.evidence
+    assert "the log has a status only (outcome unknown)" in finding.evidence
     assert "exit" not in finding.evidence
 
 
@@ -220,7 +222,8 @@ def test_multi_call_exec_status_only_no_shared_output(tmp_path):
     events = parse(tmp_path, lines).tool_calls()
     assert [e.tool_action for e in events] == [WRITE, SHELL]
     assert [e.tool_id for e in events] == ["c1#1", "c1#2"]
-    assert all(e.output == "" and e.status == "completed" for e in events)
+    assert all(e.output == "" for e in events)
+    assert [e.status for e in events] == ["completed", "outcome unknown"]  # SEC-213
     assert not events[0].is_error  # awaited, straight-line, script completed: it applied
     [finding] = audit(tmp_path, lines).findings
     assert finding.verdict is Verdict.UNVERIFIED
@@ -307,7 +310,7 @@ def test_running_cell_finishes_through_wait(tmp_path):
                                            "arguments": json.dumps({"cell_id": "7"})}),
               mk.exec_result(clock, "w1", DONE, ["3 passed"])]
     run = [e for e in parse(tmp_path, lines).tool_calls() if e.tool_action == SHELL][0]
-    assert run.result_seen and run.status == "completed" and run.exit_code is None
+    assert run.result_seen and run.status == "outcome unknown" and run.exit_code is None
 
 
 def test_running_cell_without_a_result_is_no_result(tmp_path):

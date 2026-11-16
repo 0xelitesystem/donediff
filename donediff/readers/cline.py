@@ -378,7 +378,9 @@ class _Build:
                 continue  # an earlier copy failed: a later success does not undo it
             event.result_seen = True
             event.output = output
-            event.status = "error" if failed else "success"
+            # No ToolOperationResult and no is_error: the log does not show the
+            # write landed, so its outcome is unknown, never a success (SEC-212).
+            event.status = "error" if failed else "success" if ops else "unknown"
             event.is_error = failed
 
     def shell_results(self, events: list[Event], block: dict) -> None:

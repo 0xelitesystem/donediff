@@ -358,25 +358,33 @@ def _not_checked(skipped: set[str]) -> str:
 # How a reader marks a write or edit that did not land (SEC-208): Gemini and
 # Qwen say cancelled or error, Codex failed or declined, OpenCode error.
 _FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejected", "declined"})
+# A result the log holds but that does not say whether the call worked: Codex
+# code mode "outcome unknown", Cline "unknown" (SEC-212, is_error False).
+_UNKNOWN_STATUS = frozenset({"outcome unknown", "unknown"})
+# A Codex code-mode script that failed or was stopped: a command nested in it
+# keeps is_error False (a test claim stays "status only"), but it is no
+# evidence that a file it would write was written (SEC-213).
+_SCRIPT_ENDED = frozenset({"script failed", "script terminated"})
+_NO_EVIDENCE_STATUS = _FAILED_STATUS | _UNKNOWN_STATUS | _SCRIPT_ENDED
 
 
 def _write_failed(event: Event) -> bool:
-    """A write or edit the log does not show succeeding: it failed, a rewind
-    left it behind (SEC-210), or no result was recorded (awaiting approval,
-    still running, CLI stopped: SEC-208). It stays an edit for staleness
-    (code may have changed: errs safe), but is no evidence that the file was
-    written. result_seen None (a reader that does not track results) counts."""
+    """A write or edit the log does not show succeeding: it failed, its
+    outcome is unknown (SEC-212, SEC-213), a rewind left it behind (SEC-210), or no
+    result was recorded (awaiting approval, still running, CLI stopped:
+    SEC-208). It stays an edit for staleness (code may have changed: errs
+    safe), but is no evidence that the file was written. result_seen None (a
+    reader that does not track results) counts."""
+    status = (event.status or "").lower()
     return (event.is_error or event.rewound or event.result_seen is False
-            or (event.status or "").lower() in _FAILED_STATUS)
+            or status in _NO_EVIDENCE_STATUS)
 
 
 def _write_why(event: Event) -> str:
     """Why `_write_failed` is true, as the end of a sentence."""
-    if (event.status or "").lower() == "outcome unknown":
-        # Codex code mode: the script hid whether the call ran (is_error stays
-        # True, so it is still no evidence the file was written).
+    if (event.status or "").lower() in _UNKNOWN_STATUS:
         return "has an unknown outcome: the log does not show whether it ran"
-    if event.is_error or (event.status or "").lower() in _FAILED_STATUS:
+    if event.is_error or (event.status or "").lower() in _FAILED_STATUS | _SCRIPT_ENDED:
         return f"did not succeed ({event.status or 'error'})"
     if event.rewound:
         return "was rewound"
