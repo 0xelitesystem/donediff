@@ -60,8 +60,10 @@ donediff now reads more coding agents than Claude Code.
 - JSON and Markdown reports show a home folder as `~` (for example
   `/home/<name>/project` becomes `~/project`) in the transcript path, the
   project folder, evidence, gaming-signal text and each claim's quote,
-  sentence and detail, so a report attached to a
-  CI run or an issue carries no user name. The JSON keys are the same; only
+  sentence and detail, so a report attached to a CI run or an issue does not
+  show the home folder in those fields. Other text, such as a folder name or a
+  name inside a command, is not changed: read a report before you share it.
+  The JSON keys are the same; only
   these values are shorter. `--full-paths` keeps the full paths. The terminal
   report is unchanged.
 - `list` prints a heading row (ID MODIFIED SIZE PROJECT); scripts that parse

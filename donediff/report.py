@@ -44,7 +44,7 @@ def _own_home() -> str:
 
 def home_as_tilde(text: str) -> str:
     """The text with each home-folder prefix shown as ~, so a JSON or Markdown
-    report shared in CI or an issue carries no user name (SEC-220)."""
+    report shared in CI or an issue does not show the home folder (SEC-220)."""
     if not text:
         return text
     home = _own_home().rstrip("\\/")
