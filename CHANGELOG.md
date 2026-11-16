@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+donediff now reads more coding agents than Claude Code.
+
+### Added
+
+- Transcript readers, picked with `--agent` (`auto` by default, which keeps
+  Claude Code first):
+  - Codex CLI: rollout files under `$CODEX_HOME` or `~/.codex/sessions`
+    (`.jsonl.zst` too on Python 3.14 and later), including the code mode of
+    Codex CLI 0.169, where the model calls one `exec` tool with a script.
+    The script is read as text and never run; only plain
+    `tools.<name>(...)` calls are taken, and any other use is counted as an
+    unrecognised record.
+  - opencode: its SQLite database (`$OPENCODE_DB`, or `opencode/opencode.db`
+    under `$XDG_DATA_HOME` or `~/.local/share`), both table layouts.
+  - Gemini CLI: chat files under `~/.gemini/tmp`, replayed the way Gemini
+    loads them (rewinds and patches included), and the older one-file
+    `.json` sessions.
+  - Qwen Code: chat files under `~/.qwen/projects` (and the older
+    `tmp/<id>/chats`), following the active history the way Qwen resumes it.
+  - Cline: session files under `~/.cline/data/sessions`.
+  - Goose: its `sessions.db`, schema version 18 only.
+- An exit code is taken only from the field where each agent records one.
+  Where an agent logs a status and no exit code, the finding says "the log
+  has a status only" and never "exit code".
+- The JSON report's `scope` object has `unrecognised_records`: the number of
+  records a reader could not read and skipped, the same count the terminal
+  and Markdown scope line already showed.
+
+### Changed
+
+- One evidence rule for every reader: a run, a write or an edit backs a
+  claim only when the log holds an explicit success record for it (an exit
+  code of 0 read from a structured field, or the agent's own success
+  status). Stricter than 0.4.0:
+  - a shell run with no result in the log is UNVERIFIED, never "exit 0";
+  - a task-done claim after a run with no result, a status-only run or a
+    declined run is UNVERIFIED;
+  - a commit id printed by a run with no success record backs nothing;
+  - a shell write still running, or with no success record, is no evidence
+    that the file was written;
+  - skipped, timed out, not recorded, still waiting and rewound calls are no
+    evidence;
+  - a Codex patch counts only when Codex recorded it as applied; otherwise
+    its outcome is unknown;
+  - a printed "exit code 0" on a failed Claude Code result is not taken.
+- Gaming signals on a rewound call end with "(rewound)".
+
+### Fixed
+
+- SEC-203: a relative `$OPENCODE_DB` joined onto a network `$XDG_DATA_HOME`
+  is refused; the final path is checked, not only its parts.
+- SEC-204: opening an opencode database in WAL mode no longer creates files
+  beside it.
+- SEC-207: a log line holding deeply nested JSON no longer crashes the
+  audit; it is counted as unreadable.
+- SEC-208: a write or edit that failed, or that has no recorded result, no
+  longer backs a "created" or "report at" claim. It still makes an earlier
+  check stale.
+- SEC-209: a Qwen Code run that did not pass never reads as passing, even
+  when the command printed its own exit line.
+- SEC-210: a Qwen Code rewind no longer hides a later edit or failure; a
+  rewound run or write is never evidence.
+- SEC-211: Qwen Code exit codes are no longer read from text for a cancelled
+  run.
+- SEC-212: a Cline edit or patch with no recorded outcome is unknown, not a
+  success.
+- SEC-213: a command inside a Codex code-mode script has an unknown outcome,
+  and a write in a script that failed or was stopped is no evidence.
+- SEC-214: a Goose tool call skipped in chat mode never ran: it is declined,
+  not a success.
+- SEC-215: when Goose rewrites a whole conversation, no pass logged before
+  the rewrite is proof.
+- SEC-216: a relative or drive-relative `APPDATA` or `XDG_DATA_HOME` is
+  ignored by the Goose and opencode readers, as if unset, and a data folder
+  that is still not absolute (a relative home) is refused, so neither reads
+  from the working folder.
+- SEC-217: Goose metadata over a size cap is skipped and counted, and one
+  session's read is bounded; no pass logged past the bound is proof.
+- SEC-218: a Goose or opencode database with both side files (`-wal` and
+  `-shm`) is read from a private temporary copy, so nothing beside the
+  original is ever written.
+- SEC-219: a Goose tool name with no extension prefix is not taken as the
+  developer extension's shell, write or edit.
+
+### Security
+
+- Every new reader opens agent logs read-only, starts no other program and
+  makes no network call. Network and device paths are refused. The Codex,
+  Gemini CLI, Qwen Code and Cline readers do not follow symlinks or Windows
+  junctions in the agents' folders, and the Goose reader does not open a
+  linked database.
+
 ## 0.4.0
 
 donediff now reads the project's git state.
