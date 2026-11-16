@@ -60,7 +60,7 @@ from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Se
 from ..parser import complete_background, epoch, loads
 from ..shell import is_remote_path
 from . import codex_code_mode as code_mode
-from .base import UnreadableSession
+from .base import UnreadableSession, pick_session
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
 _META_LIMIT = 4 * 1024 * 1024  # bytes of the first line read for discovery and detect
@@ -889,16 +889,11 @@ class CodexReader:
         direct = Path(target)
         if direct.is_file():
             return direct
-        sessions = self.discover(project_filter)
-        if target == "latest":
-            if not sessions:
-                raise FileNotFoundError(f"no transcripts found under {self.location}")
-            return sessions[0]
-        for candidate in sessions:
-            if (thread_id(candidate.name).startswith(target)
-                    or _stem(candidate.name).startswith(target)):
-                return candidate
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        return pick_session(self.discover(project_filter), target, self.session_keys,
+                            self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return thread_id(path.name), _stem(path.name)
 
     def detect(self, path: Path) -> bool:
         path = Path(path)

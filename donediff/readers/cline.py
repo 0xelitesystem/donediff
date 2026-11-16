@@ -75,7 +75,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _str
+from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, argv_command, clean_path, parse_patch
 from .gemini import _entries, _is_plain_dir
 
@@ -544,15 +544,11 @@ class ClineReader:
         direct = Path(target)
         if not is_remote_path(target) and direct.is_file():
             return direct
-        sessions = self.discover(project_filter)
-        if target == "latest":
-            if not sessions:
-                raise FileNotFoundError(f"no transcripts found under {self.location}")
-            return sessions[0]
-        for candidate in sessions:
-            if _session_id(candidate).startswith(target):
-                return candidate
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        return pick_session(self.discover(project_filter), target, self.session_keys,
+                            self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return (_session_id(path),)
 
     def detect(self, path: Path) -> bool:
         return read_document(Path(path)) is not None

@@ -56,7 +56,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _absolute, _is_link, _str
+from .base import UnreadableSession, _absolute, _is_link, _str, pick_session
 from .base import _int as _exit
 from .codex import _join, clean_path, parse_patch
 
@@ -645,6 +645,7 @@ def parse_session(path: SessionPath) -> Session:
 
 class OpencodeReader:
     name = "opencode"
+    id_width = 12  # `list` shows at least this much of a session id
 
     @property
     def location(self) -> str:
@@ -681,14 +682,10 @@ class OpencodeReader:
         return self._pick(self.discover(project_filter), target)
 
     def _pick(self, sessions: list, target: str) -> Path:
-        if target == "latest":
-            if not sessions:
-                raise FileNotFoundError(f"no transcripts found under {self.location}")
-            return sessions[0]
-        for candidate in sessions:
-            if candidate.session_id.startswith(target):
-                return candidate
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        return pick_session(sessions, target, self.session_keys, self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return (getattr(path, "session_id", ""),)
 
     def detect(self, path: Path) -> bool:
         path = Path(path)

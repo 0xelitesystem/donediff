@@ -57,7 +57,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _int, _str
+from .base import UnreadableSession, _int, _str, pick_session
 from .codex import _UNSAFE, _join, _lines, clean_path
 from .gemini import _entries, _is_plain_dir, result_text
 
@@ -484,15 +484,11 @@ class QwenReader:
         direct = Path(target)
         if not is_remote_path(target) and direct.is_file():
             return direct
-        sessions = self.discover(project_filter)
-        if target == "latest":
-            if not sessions:
-                raise FileNotFoundError(f"no transcripts found under {self.location}")
-            return sessions[0]
-        for candidate in sessions:
-            if candidate.stem.startswith(target):
-                return candidate
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        return pick_session(self.discover(project_filter), target, self.session_keys,
+                            self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return (Path(path).stem,)
 
     def detect(self, path: Path) -> bool:
         return first_record(Path(path)) is not None

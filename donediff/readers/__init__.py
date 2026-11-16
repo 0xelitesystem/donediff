@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import Reader, UnreadableSession
+from .base import AmbiguousSession, Reader, UnreadableSession, short_ids
 from .claude_code import CLAUDE_CODE
 from .cline import CLINE
 from .codex import CODEX
@@ -29,8 +29,8 @@ from .goose import GOOSE
 READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI, QWEN, CLINE, GOOSE)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
-__all__ = ["AGENT_CHOICES", "READERS", "Reader", "UnreadableSession", "select",
-           "select_for_list"]
+__all__ = ["AGENT_CHOICES", "READERS", "AmbiguousSession", "Reader", "UnreadableSession",
+           "select", "select_for_list", "short_ids"]
 
 
 def _named(agent: str) -> Reader:

@@ -58,7 +58,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _str
+from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, _join, _lines, clean_path
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
@@ -520,6 +520,11 @@ def parse_session(path: str | Path) -> Session:
     return session
 
 
+def _full_id(path: Path) -> tuple[str, ...]:
+    meta = first_record(path)
+    return (meta["sessionId"],) if meta else ()
+
+
 class GeminiReader:
     name = "gemini"
 
@@ -556,20 +561,16 @@ class GeminiReader:
         if not is_remote_path(target) and direct.is_file():
             return direct
         sessions = self.discover(project_filter)
-        if target == "latest":
-            if not sessions:
-                raise FileNotFoundError(f"no transcripts found under {self.location}")
-            return sessions[0]
-        for candidate in sessions:
-            if short_id(candidate.name).startswith(target) \
-                    or _stem(candidate.name).startswith(target):
-                return candidate
-        if len(target) > 8:
-            for candidate in sessions:
-                meta = first_record(candidate)
-                if meta and meta["sessionId"].startswith(target):
-                    return candidate
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        try:
+            return pick_session(sessions, target, self.session_keys, self.location)
+        except FileNotFoundError:
+            if len(target) <= 8:
+                raise
+        # a longer id than the file name holds: the full id in each session's first record
+        return pick_session(sessions, target, _full_id, self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return short_id(path.name), _stem(path.name)
 
     def detect(self, path: Path) -> bool:
         return first_record(Path(path)) is not None

@@ -462,15 +462,5 @@ def discover_transcripts(project_filter: str | None = None) -> list[Path]:
 
 def resolve_target(target: str, project_filter: str | None = None) -> Path:
     """Turn a CLI target (path, session id, or 'latest') into a file path."""
-    direct = Path(target)
-    if direct.is_file():
-        return direct
-    transcripts = discover_transcripts(project_filter)
-    if target == "latest":
-        if not transcripts:
-            raise FileNotFoundError("no transcripts found under ~/.claude/projects")
-        return transcripts[0]
-    for candidate in transcripts:
-        if candidate.stem.startswith(target):
-            return candidate
-    raise FileNotFoundError(f"no transcript matching {target!r}")
+    from .readers.claude_code import CLAUDE_CODE  # the one resolver (readers.base.pick_session)
+    return CLAUDE_CODE.resolve(target, project_filter)

@@ -29,6 +29,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from datetime import datetime
@@ -38,13 +39,15 @@ from . import __version__
 from .claims import extract_claims
 from .gaming import detect_gaming
 from .models import AuditResult
-from .readers import AGENT_CHOICES, UnreadableSession, select, select_for_list
+from .readers import (AGENT_CHOICES, AmbiguousSession, UnreadableSession, select,
+                      select_for_list, short_ids)
 from .report import render_json, render_markdown, render_terminal
 from .score import score_audit
 from .verify import verify_claims
 
 
 EXIT_BELOW = 1  # score below --fail-under
+_UNSAFE_ID = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 EXIT_NO_SCORE = 3  # --fail-under given and the session has no score
 
 _EXIT_CODES = """exit codes:
@@ -89,7 +92,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
                            main_only=args.main_only, agent=args.agent)
-    except (FileNotFoundError, UnreadableSession) as exc:
+    except (FileNotFoundError, UnreadableSession, AmbiguousSession) as exc:
         print(f"donediff: {exc}", file=sys.stderr)
         return 2
 
@@ -116,15 +119,20 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def _cmd_list(args: argparse.Namespace) -> int:
     reader = select_for_list(args.agent, args.project)
-    transcripts = reader.discover(args.project)[: args.limit]
+    found = reader.discover(args.project)
+    transcripts = found[: args.limit]
     if not transcripts:
         print(f"no transcripts found under {reader.location}", file=sys.stderr)
         return 2
-    for path in transcripts:
+    # ids long enough that each names one session (QA-024), so `audit <id>` gets that row
+    ids = [_UNSAFE_ID.sub("?", i) for i in short_ids(found, transcripts, reader.session_keys,
+                                                  getattr(reader, "id_width", 8))]
+    width = max(len(i) for i in ids)
+    for path, short_id in zip(transcripts, ids):
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         size_kb = path.stat().st_size // 1024
-        short_id, project = reader.describe(path)
-        print(f"{short_id}  {mtime:%Y-%m-%d %H:%M}  {size_kb:>6} KB  "
+        _, project = reader.describe(path)
+        print(f"{short_id.ljust(width)}  {mtime:%Y-%m-%d %H:%M}  {size_kb:>6} KB  "
               f"{project}")
     return 0
 

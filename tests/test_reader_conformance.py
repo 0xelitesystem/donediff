@@ -187,3 +187,49 @@ def test_main_only_is_reported_only_when_given(tmp_path, name):
     asked = cli.run_audit(str(target), check_disk=False, agent=module.AGENT, main_only=True)
     assert asked.session.main_only is True
     assert "--main-only" in scope_line(asked.session)
+
+
+_PREFIX = "abcd1234"
+_IDS = (_PREFIX + "_1", _PREFIX + "_1x9")  # the first id is also a prefix of the second
+
+
+def _two_sessions(name: str, tmp_path, monkeypatch) -> list:
+    """Two sessions whose ids share a prefix, as the reader's discover() returns them."""
+    from donediff.readers import cline, goose, opencode
+    files = {
+        "claude-code": lambda i: tmp_path / f"{i}.jsonl",
+        "qwen": lambda i: tmp_path / f"{i}.jsonl",
+        "codex": lambda i: tmp_path / f"rollout-2026-06-10T12-00-00-{i}.jsonl",
+        "gemini": lambda i: tmp_path / f"session-2026-06-10T12-00-{i}.json",
+        "cline": lambda i: tmp_path / i / f"{i}{cline._SUFFIX}",
+        "opencode": lambda i: opencode.session_path(tmp_path / "opencode.db", i, "v2"),
+        "goose": lambda i: goose.session_path(tmp_path / "sessions.db", i),
+    }
+    assert name in files, f"registered reader {name!r} has no two-session case here (QA-024)"
+    sessions = [files[name](i) for i in _IDS]
+    reader = next(r for r in READERS if r.name == name)
+    monkeypatch.setattr(reader, "discover", lambda project_filter=None: list(sessions))
+    if name == "goose":  # Goose lists ids straight from its database
+        monkeypatch.setattr(goose, "database_path", lambda: tmp_path / "sessions.db")
+        monkeypatch.setattr(goose, "_usable", lambda db: True)
+        monkeypatch.setattr(reader, "_list", lambda *a, **k: list(sessions))
+    return reader, sessions
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_session_ids_resolve_through_one_rule(tmp_path, monkeypatch, capsys, name):
+    """QA-024: an exact id wins, a unique prefix resolves, an ambiguous prefix is
+    refused (exit 2, naming the matches), and `list` ids each name one session."""
+    from donediff.readers import AmbiguousSession, short_ids
+    reader, sessions = _two_sessions(name, tmp_path, monkeypatch)
+    assert reader.resolve(_IDS[0]) is sessions[0]  # exact, though it prefixes the other
+    assert reader.resolve(_IDS[1]) is sessions[1]
+    assert reader.resolve(_IDS[1][:-1]) is sessions[1]  # a prefix of one id only
+    with pytest.raises(AmbiguousSession) as refused:
+        reader.resolve(_PREFIX)
+    assert str(refused.value) == f"{_PREFIX} matches 2 sessions: {_IDS[0]}, {_IDS[1][:-1]}"
+    assert cli.main(["audit", _PREFIX, "--agent", name]) == 2
+    assert f"{_PREFIX} matches 2 sessions" in capsys.readouterr().err
+    ids = short_ids(sessions, sessions, reader.session_keys)
+    assert len(set(ids)) == len(ids)
+    assert all(reader.resolve(i) is s for i, s in zip(ids, sessions))

@@ -51,6 +51,70 @@ class UnreadableSession(OSError):
     """The session file exists but this Python cannot read it (the message says why)."""
 
 
+class AmbiguousSession(LookupError):
+    """An id prefix matches more than one session (the message lists them)."""
+
+
+_SHORTEST_ID = 8  # `list` shows at least this much of an id, more where it must
+_LISTED = 10  # ids named in an "ambiguous" message, at most
+
+
+def _matches(pairs: list, target: str) -> list:
+    """The candidates an id matches: exact ids first, else every prefix match."""
+    exact = [c for c, keys in pairs if target in keys]
+    if exact:
+        return exact
+    return [c for c, keys in pairs if any(k.startswith(target) for k in keys)]
+
+
+def pick_session(candidates: list, target: str, keys, location: str):
+    """The session a CLI target names, for every reader (QA-024).
+
+    `candidates` are the reader's sessions, newest first; `keys(candidate)`
+    gives the ids a target may name (the session id first, then any longer
+    form, such as the file name). "latest" is the newest. An exact id wins;
+    else a prefix of one session's id resolves. A prefix that matches several
+    sessions is refused (AmbiguousSession) instead of picking one, so a score
+    is never shown for a session the user did not mean.
+    """
+    if target == "latest":
+        if not candidates:
+            raise FileNotFoundError(f"no transcripts found under {location}")
+        return candidates[0]
+    pairs = [(c, tuple(keys(c))) for c in candidates]
+    found = _matches(pairs, target)
+    if not found:
+        raise FileNotFoundError(f"no transcript matching {target!r}")
+    if len(found) == 1:
+        return found[0]
+    names = [_short_id(pairs, c) for c in found[:_LISTED]]
+    more = ", ..." if len(found) > _LISTED else ""
+    raise AmbiguousSession(f"{target} matches {len(found)} sessions: "
+                           f"{', '.join(names)}{more}")
+
+
+def _short_id(pairs: list, candidate, width: int = _SHORTEST_ID) -> str:
+    """The shortest id (at least `width` characters) that names only this candidate."""
+    keys = next(k for c, k in pairs if c is candidate)
+    for key in keys:
+        for size in range(min(width, len(key)), len(key) + 1):
+            text = key[:size]
+            if text == "latest":
+                continue
+            found = _matches(pairs, text)
+            if len(found) == 1 and found[0] is candidate:
+                return text
+    return keys[-1] if keys else "?"
+
+
+def short_ids(candidates: list, shown: list, keys, width: int = _SHORTEST_ID) -> list[str]:
+    """For `list`: an id per shown session, each long enough to name only it."""
+    pairs = [(c, tuple(keys(c))) for c in candidates]
+    known = {id(c) for c, _ in pairs}
+    pairs += [(c, tuple(keys(c))) for c in shown if id(c) not in known]
+    return [_short_id(pairs, c, width) for c in shown]
+
+
 class Reader(Protocol):
     name: str  # the --agent value, e.g. "claude-code"
     location: str  # where its sessions live, as messages name it
@@ -66,6 +130,9 @@ class Reader(Protocol):
 
     def describe(self, path: Path) -> tuple[str, str]:
         """(short session id, project) for one line of `donediff list`."""
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        """The ids a target may name this session by, the session id first (pick_session)."""
 
     def parse(self, path: Path) -> Session:
         """The session, with every tool call's action and inputs in the shared shape."""

@@ -12,6 +12,7 @@ from pathlib import Path
 from .. import delegated, parser
 from ..models import Session
 from ..parser import loads
+from .base import pick_session
 from .cline import is_cline_document
 from .qwen import is_qwen_record
 
@@ -54,7 +55,14 @@ class ClaudeCodeReader:
         return parser.discover_transcripts(project_filter)
 
     def resolve(self, target: str, project_filter: str | None = None) -> Path:
-        return parser.resolve_target(target, project_filter)
+        direct = Path(target)
+        if direct.is_file():
+            return direct
+        return pick_session(self.discover(project_filter), target, self.session_keys,
+                            self.location)
+
+    def session_keys(self, path: Path) -> tuple[str, ...]:
+        return (path.stem,)
 
     def detect(self, path: Path) -> bool:
         record = first_record(path)

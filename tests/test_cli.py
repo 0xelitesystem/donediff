@@ -83,3 +83,33 @@ def test_help_names_the_score_and_exit_codes(capsys):
     out = capsys.readouterr().out
     assert "donediff score" in out and "Receipts" not in out
     assert "3  --fail-under was given and the session has no score" in out
+
+
+def _fixture_projects(monkeypatch):
+    from donediff import parser
+    sessions = Path(__file__).resolve().parent / "fixtures" / "sessions"
+    monkeypatch.setattr(parser, "projects_dir", lambda: sessions)
+
+
+def test_an_ambiguous_id_prefix_is_refused(monkeypatch, capsys):
+    """QA-024: `audit s1` matched s1-sync, s10-turn, s11-live and s12-pedit and
+    silently audited one of them; it now names them and exits 2."""
+    _fixture_projects(monkeypatch)
+    assert main(["audit", "s1", "--agent", "claude-code", "--no-disk-check"]) == 2
+    err = capsys.readouterr().err
+    assert "s1 matches 4 sessions: " in err
+    for sid in ("s1-sync", "s10-turn", "s11-live", "s12-pedi"):  # 8 characters at least
+        assert sid in err
+    assert main(["audit", "s1-sync", "--agent", "claude-code", "--no-disk-check",
+                 "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["transcript"].endswith("s1-sync.jsonl")
+
+
+def test_list_ids_each_name_one_session(monkeypatch, capsys):
+    _fixture_projects(monkeypatch)
+    assert main(["list", "--agent", "claude-code", "--limit", "50"]) == 0
+    ids = [line.split()[0] for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(ids) == len(set(ids)) == 12
+    for sid in ids:
+        assert main(["audit", sid, "--agent", "claude-code", "--no-disk-check", "--json"]) == 0
+        assert Path(json.loads(capsys.readouterr().out)["transcript"]).stem.startswith(sid)
