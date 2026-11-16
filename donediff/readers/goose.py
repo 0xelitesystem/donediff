@@ -53,8 +53,8 @@ inside the session; ids missing right below it, or another session's older id
 logged later than its first message, mark it, and then no pass in it counts.
 
 The database is opened read-only (URI mode=ro, query_only; immutable for a
-WAL file with no side files, SEC-204) for one read and closed; nothing is
-written. A row whose JSON does not parse, an over-size row or metadata, or a
+WAL file with no side files, SEC-204; a private temp copy when both side files
+are there, SEC-218) for one read and closed; nothing is written beside it. A row whose JSON does not parse, an over-size row or metadata, or a
 block type this reader does not know is skipped and counted in
 Session.unrecognised. Rows are read one at a time under a total row and size
 bound; rows past it are counted too, and no pass logged before them is proof.
@@ -76,11 +76,11 @@ from ..parser import loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 from .codex import clean_path
-from .opencode import is_database
+from .opencode import COPY, connect_read_only, is_database
 
 SCHEMA_VERSION = 18  # the one tested version (session_manager.rs L33 at d8de0e789f19)
 _MAGIC = b"SQLite format 3\x00"
-_TIMEOUT = 1.0
+_COPY_FAILED = "Goose database could not be copied for a read-only look; try again"
 _MAX_ROW = 16 * 1024 * 1024  # bytes of content_json read for one message
 _MAX_ROWS = 500_000  # messages read for one session
 _MAX_META = 64 * 1024  # characters of metadata_json read for one message (SEC-217)
@@ -161,7 +161,8 @@ def _open_mode(db: Path) -> str:
     Goose runs its database in WAL mode (session_manager.rs L1099). With no
     -shm/-wal beside it, open immutable (nothing created, nothing locked; a
     Goose that starts writing mid-read is the trade-off). With both, Goose
-    owns them and mode=ro reads them. A lone -wal is refused: an immutable
+    owns them, and even mode=ro rewrites the -shm in place, so COPY: the read
+    goes to a private temp copy (SEC-218). A lone -wal is refused: an immutable
     read would miss its writes, and a missed failure must never become a pass.
     """
     try:
@@ -174,7 +175,7 @@ def _open_mode(db: Path) -> str:
     base = os.fspath(db)
     has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
     if has_wal and has_shm:
-        return "?mode=ro"
+        return COPY
     if has_wal:
         raise UnreadableSession("Goose database has an unfinished write log; "
                                 "start and close Goose once, then try again")
@@ -197,9 +198,7 @@ class _Conn:
 
     def __enter__(self) -> sqlite3.Connection:
         try:
-            uri = Path(os.path.abspath(self.db)).as_uri() + _open_mode(self.db)
-            self.conn = sqlite3.connect(uri, uri=True, timeout=_TIMEOUT)
-            self.conn.execute("PRAGMA query_only = 1")
+            self.conn = connect_read_only(self.db, _open_mode(self.db), _COPY_FAILED)
         except sqlite3.Error as exc:
             if self.conn is not None:
                 self.conn.close()

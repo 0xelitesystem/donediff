@@ -34,17 +34,21 @@ internal and moves). Two schemas are read, both can be in one file:
 A real exit code comes only from a shell exit field. A call with only a
 completed / error state keeps exit_code None and a status, never a made-up
 code. The database is opened read-only (SQLite URI mode=ro, query_only) for
-the length of one read and closed; nothing is written. A row whose JSON does
+the length of one read and closed; nothing is written beside it (a WAL file
+with live side files is read from a private temp copy, SEC-218). A row whose JSON does
 not parse, or a part or message type this reader does not know, is skipped
 and counted in Session.unrecognised.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
+import shutil
 import sqlite3
 import stat as stat_mod
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +61,7 @@ from .codex import clean_path, parse_patch
 
 _MAGIC = b"SQLite format 3\x00"
 _TIMEOUT = 1.0  # seconds to wait for a writer's lock before giving up
+_COPY_FAILED = "opencode database could not be copied for a read-only look; try again"
 _V1, _V2 = "v1", "v2"
 _TABLES = {_V1: ("session", "message", "part"),
            _V2: ("session_v2", "session_message", "session_part")}
@@ -127,6 +132,78 @@ def session_path(db: Path, session_id: str, schema: str) -> SessionPath:
     return path
 
 
+COPY = "copy"  # _open_mode: read a private copy, never the file itself (SEC-218)
+_COPIES: dict[str, tuple[tuple, str, Path]] = {}  # source -> (signature, folder, copy)
+
+
+def _signature(db: Path) -> tuple:
+    out = []
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            info = os.stat(os.fspath(db) + suffix)
+        except OSError:
+            out.append(None)
+        else:
+            out.append((info.st_size, info.st_mtime_ns))
+    return tuple(out)
+
+
+def _drop_copy(key: str) -> None:
+    held = _COPIES.pop(key, None)
+    if held is not None:
+        shutil.rmtree(held[1], ignore_errors=True)
+
+
+def drop_copies() -> None:
+    """Delete every private copy this process made (also run at exit)."""
+    for key in list(_COPIES):
+        _drop_copy(key)
+
+
+atexit.register(drop_copies)
+
+
+def private_copy(db: Path, why: str) -> Path:
+    """The database and its -wal, copied into a new private temp folder (SEC-218).
+
+    A WAL database with a -wal and a -shm beside it is never opened in place:
+    even a read-only connection rewrites the -shm. The -shm is not copied:
+    SQLite rebuilds it from the -wal inside the private folder, so a stale or
+    half-written index is never trusted. One copy is kept per unchanged source
+    and deleted when the source changes, by drop_copies, and at exit.
+    """
+    key = os.path.normcase(os.path.abspath(db))
+    signature = _signature(db)
+    held = _COPIES.get(key)
+    if held is not None and held[0] == signature and held[2].is_file():
+        return held[2]
+    _drop_copy(key)
+    folder = tempfile.mkdtemp(prefix="donediff-")
+    copy = Path(folder) / "copy.db"
+    try:
+        shutil.copyfile(db, copy)
+        shutil.copyfile(os.fspath(db) + "-wal", os.fspath(copy) + "-wal")
+    except OSError:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise UnreadableSession(why) from None
+    _COPIES[key] = (signature, folder, copy)
+    return copy
+
+
+def connect_read_only(db: Path, mode: str, why: str) -> sqlite3.Connection:
+    """A query_only connection for `mode` from an _open_mode (raises sqlite3.Error)."""
+    if mode == COPY:
+        db, mode = private_copy(db, why), "?mode=ro"
+    uri = Path(os.path.abspath(db)).as_uri() + mode
+    conn = sqlite3.connect(uri, uri=True, timeout=_TIMEOUT)
+    try:
+        conn.execute("PRAGMA query_only = 1")
+    except sqlite3.Error:
+        conn.close()
+        raise
+    return conn
+
+
 class _Conn:
     """A read-only connection, closed on exit (sqlite3's own context manager only commits)."""
 
@@ -136,9 +213,7 @@ class _Conn:
 
     def __enter__(self) -> sqlite3.Connection:
         try:
-            uri = Path(os.path.abspath(self.db)).as_uri() + _open_mode(self.db)
-            self.conn = sqlite3.connect(uri, uri=True, timeout=_TIMEOUT)
-            self.conn.execute("PRAGMA query_only = 1")
+            self.conn = connect_read_only(self.db, _open_mode(self.db), _COPY_FAILED)
         except sqlite3.Error as exc:
             if self.conn is not None:
                 self.conn.close()
@@ -157,10 +232,11 @@ def _open_mode(db: Path) -> str:
     `PRAGMA journal_mode = WAL`). A mode=ro connection to a WAL database with no
     -shm file creates -shm and -wal beside it. When the header says WAL and the
     two side files are not both there, open it immutable: nothing is created and
-    nothing is locked. When both exist, opencode (or its last run) owns them and
-    mode=ro reads them. A lone -wal (a crash leftover, no -shm) holds writes an
-    immutable read would miss, and mode=ro would create -shm: refuse it, so a
-    missed later failure can never turn into a pass.
+    nothing is locked. When both exist, even mode=ro rewrites the -shm in place,
+    so COPY: the read goes to a private copy (SEC-218). A lone -wal (a crash
+    leftover, no -shm) holds writes an immutable read would miss, and mode=ro
+    would create -shm: refuse it, so a missed later failure can never turn into
+    a pass.
     """
     try:
         with open(db, "rb") as fh:
@@ -173,7 +249,7 @@ def _open_mode(db: Path) -> str:
     base = os.fspath(db)
     has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
     if has_wal and has_shm:
-        return "?mode=ro"
+        return COPY
     if has_wal:
         raise UnreadableSession("opencode database has an unfinished write log; "
                                 "start and close opencode once, then try again")

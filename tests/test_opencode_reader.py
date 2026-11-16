@@ -348,7 +348,7 @@ def test_wal_db_with_both_side_files_reads_them(tmp_path):
     _to_wal(db)
     (tmp_path / "opencode.db-wal").write_bytes(b"")
     (tmp_path / "opencode.db-shm").write_bytes(b"")
-    assert oc._open_mode(Path(db)) == "?mode=ro"
+    assert oc._open_mode(Path(db)) == oc.COPY  # read from a private copy (SEC-218)
 
 
 def test_rollback_journal_db_opens_plain_read_only(tmp_path):

@@ -6,11 +6,15 @@ Every value here is made up: no real run, no real path, no personal data.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import sqlite3
 from pathlib import Path
 
 from donediff import cli
 from donediff.models import SHELL, ClaimType, Verdict
 from donediff.readers import goose as gs
+from donediff.readers import opencode as oc
 
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -174,3 +178,86 @@ def test_big_metadata_rows_stay_out_of_memory(tmp_path):
         tracemalloc.stop()
     assert session.unrecognised == 3
     assert peak < 4 * 1024 * 1024, peak
+
+
+# -- SEC-218: a leftover -wal + -shm pair is read from a private copy ------------------
+
+_spec_oc = importlib.util.spec_from_file_location(
+    "make_opencode_218", ROOT / "tests" / "fixtures" / "opencode" / "make_opencode.py")
+mk_oc = importlib.util.module_from_spec(_spec_oc)
+_spec_oc.loader.exec_module(mk_oc)
+
+
+def _leftover_pair(db, folder, update_sql) -> Path:
+    """A WAL db copied with its live -wal and -shm (the SEC-218 repro); the
+    update sits only in the -wal, so reading it proves the -wal was read."""
+    folder.mkdir()
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute(update_sql)
+    writer.commit()
+    name = Path(db).name
+    for suffix in ("", "-wal", "-shm"):
+        shutil.copyfile(str(db) + suffix, folder / (name + suffix))
+    writer.close()
+    return folder / name
+
+
+def _snapshot(folder) -> dict:
+    return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(folder.iterdir())}
+
+
+def _assert_untouched_and_cleaned(reader, db, folder, before) -> None:
+    assert _snapshot(folder) == before  # same names, bytes and mtimes
+    assert reader._open_mode(db) == oc.COPY
+    copies = [held[1] for held in oc._COPIES.values()]
+    assert copies and all(not Path(c).is_relative_to(folder) for c in copies)
+    oc.drop_copies()
+    assert oc._COPIES == {} and not any(Path(c).exists() for c in copies)
+
+
+def test_goose_leftover_wal_and_shm_are_never_written(tmp_path, monkeypatch, capsys):
+    db = _leftover_pair(mk.demo(tmp_path / "sessions.db"), tmp_path / "left",
+                        "UPDATE sessions SET working_dir = '/home/dev/walproof'")
+    folder = db.parent
+    before = _snapshot(folder)
+    assert sorted(before) == ["sessions.db", "sessions.db-shm", "sessions.db-wal"]
+    monkeypatch.setenv("GOOSE_PATH_ROOT", str(tmp_path / "root"))
+    path = gs.GOOSE.resolve(str(db))
+    assert gs.GOOSE.describe(path)[1] == "walproof"
+    path.stat()
+    assert gs.GOOSE.detect(db)
+    assert audit(db).session.tool_calls()
+    assert cli.main(["audit", str(db), "--agent", "goose", "--no-disk-check"]) in (0, 1)
+    capsys.readouterr()
+    _assert_untouched_and_cleaned(gs, db, folder, before)
+
+
+def test_opencode_leftover_wal_and_shm_are_never_written(tmp_path, monkeypatch, capsys):
+    db = _leftover_pair(mk_oc.demo(tmp_path / "opencode.db"), tmp_path / "left",
+                        "UPDATE session_v2 SET directory = '/home/dev/walproof'")
+    folder = db.parent
+    before = _snapshot(folder)
+    assert sorted(before) == ["opencode.db", "opencode.db-shm", "opencode.db-wal"]
+    monkeypatch.setenv("OPENCODE_DB", str(db))
+    path = oc.OPENCODE.resolve(str(db))
+    assert oc.OPENCODE.describe(path)[1] == "walproof"
+    path.stat()
+    assert oc.OPENCODE.detect(db)
+    assert cli.run_audit(str(db), check_disk=False, agent="opencode").session.tool_calls()
+    assert cli.main(["list", "--agent", "opencode"]) == 0
+    capsys.readouterr()
+    _assert_untouched_and_cleaned(oc, db, folder, before)
+
+
+def test_a_changed_source_gets_a_fresh_copy_and_the_old_one_is_deleted(tmp_path):
+    db = _leftover_pair(mk.demo(tmp_path / "sessions.db"), tmp_path / "left",
+                        "UPDATE sessions SET working_dir = '/home/dev/walproof'")
+    first = oc.private_copy(db, "x")
+    assert oc.private_copy(db, "x") == first  # unchanged source: one copy
+    os.utime(str(db) + "-wal", ns=(1, 1))
+    second = oc.private_copy(db, "x")
+    assert second != first and not first.parent.exists() and second.is_file()
+    oc.drop_copies()
+    assert not second.parent.exists()
