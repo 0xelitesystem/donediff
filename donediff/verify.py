@@ -111,14 +111,19 @@ class Timeline:
         self._runs: dict[ClaimType, tuple[list[tuple], list[Event]]] = {}
         entries: dict[ClaimType, list[tuple[tuple, Event]]] = {}
         edits: list[tuple[tuple, Event]] = []
+        rewound: dict[ClaimType, list[tuple[tuple, Event]]] = {}
         for key, event in self._all_tool_calls():
             for claim_type in event.check_types:
-                entries.setdefault(claim_type, []).append((key, event))
+                # A rewound run is never evidence for a claim, only a cap on one.
+                (rewound if event.rewound else entries).setdefault(
+                    claim_type, []).append((key, event))
             if event.is_file_edit():
                 edits.append((key, event))
         for claim_type, items in entries.items():
             items.sort(key=lambda pair: pair[0])
             self._runs[claim_type] = ([k for k, _ in items], [e for _, e in items])
+        self._rewound = {t: sorted(items, key=lambda pair: pair[0])
+                         for t, items in rewound.items()}
         edits.sort(key=lambda pair: pair[0])
         self._edit_keys = [k for k, _ in edits]
         self._edits = [e for _, e in edits]
@@ -189,6 +194,15 @@ class Timeline:
         hi = bisect.bisect_left(self._edit_keys, claim_key)
         return [self._edits[i] for i in range(lo, hi)
                 if _inside(self._edits[i], within)]
+
+    def rewound_failure(self, claim_type: ClaimType, after: tuple,
+                        claim_key: tuple) -> Event | None:
+        """The newest failed run a rewind left behind, after `after` and
+        before the claim (SEC-210)."""
+        for key, event in reversed(self._rewound.get(claim_type, [])):
+            if after < key < claim_key and event.result_seen and _command_failed(event):
+                return event
+        return None
 
     def last_edit(self, claim_key, restrict) -> tuple[tuple, Event] | None:
         """The newest edit before the claim, by anyone: whether its agent had
@@ -294,10 +308,11 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
             return _found(claim, ctx, Verdict.STALE,
                           f"`{_short(run.command)}` passed, but {listed} "
                           f"edited afterwards with no re-run before the claim", run)
-    return _found(claim, ctx, Verdict.VERIFIED,
-                  f"`{_short(run.command)}` succeeded (exit "
-                  f"{run.exit_code if run.exit_code is not None else 0}"
-                  f"{_masked_note(run)})", run)
+    return _rewound_cap(timeline, kind, run_key, ctx, claim, _found(
+        claim, ctx, Verdict.VERIFIED,
+        f"`{_short(run.command)}` succeeded (exit "
+        f"{run.exit_code if run.exit_code is not None else 0}"
+        f"{_masked_note(run)})", run))
 
 
 _is_remote_path = is_remote_path  # kept under its old name for callers and tests
@@ -346,17 +361,36 @@ _FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejecte
 
 
 def _write_failed(event: Event) -> bool:
-    """A write or edit the log says did not succeed. It stays an edit for
-    staleness (code may have changed: errs safe), but is no evidence that
-    the file was written."""
-    return event.is_error or (event.status or "").lower() in _FAILED_STATUS
+    """A write or edit the log says did not succeed, or one a rewind left
+    behind (SEC-210). It stays an edit for staleness (code may have changed:
+    errs safe), but is no evidence that the file was written."""
+    return (event.is_error or event.rewound
+            or (event.status or "").lower() in _FAILED_STATUS)
 
 
 def _failed_write(claim: Claim, ctx: _Context, writes: list[Event], name: str) -> Finding:
     last = writes[-1]
+    if last.rewound and not last.is_error:
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"the {last.tool_name} call for `{name}` was rewound", last)
     return _found(claim, ctx, Verdict.UNVERIFIED,
                   f"the {last.tool_name} call for `{name}` did not succeed"
                   f" ({last.status or 'error'})", last)
+
+
+def _rewound_cap(timeline: Timeline, kind: ClaimType, run_key: tuple, ctx: _Context,
+                 claim: Claim, finding: Finding) -> Finding:
+    """A VERIFIED finding capped at UNVERIFIED when a later failed run of the
+    same kind was rewound before the claim (SEC-210)."""
+    if finding.verdict is not Verdict.VERIFIED:
+        return finding
+    failed = timeline.rewound_failure(kind, run_key, ctx.key)
+    if failed is None:
+        return finding
+    how = (f"exit {failed.exit_code}" if failed.exit_code is not None
+           else f"status {failed.status or 'error'}")
+    return _found(claim, ctx, Verdict.UNVERIFIED,
+                  f"a later run was rewound ({how}): `{_short(failed.command)}`", failed)
 
 
 def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
@@ -416,8 +450,9 @@ def _verify_task_done(timeline: Timeline, claim: Claim, ctx: _Context) -> Findin
             if reason:
                 return _found(claim, ctx, Verdict.UNVERIFIED,
                               f"{reason}: `{_short(run.command)}`", run)
-            return _found(claim, ctx, Verdict.VERIFIED,
-                          f"verified after final edit by `{_short(run.command)}`", run)
+            return _rewound_cap(timeline, claim_type, edit_key, ctx, claim, _found(
+                claim, ctx, Verdict.VERIFIED,
+                f"verified after final edit by `{_short(run.command)}`", run))
     return _unverified(claim, ctx,
                        "no test/build/typecheck ran between the final edit and this claim")
 

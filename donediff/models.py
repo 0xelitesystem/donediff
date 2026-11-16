@@ -78,6 +78,10 @@ class Event:
     background: bool = False
     done_order: float | None = None  # main ordering position of the notice
     check_types: frozenset = frozenset()  # ClaimTypes this command can back
+    # Left behind by a rewind (Qwen): off the active history, after its branch
+    # point. Evidence-only (SEC-210): an edit still makes a check stale, a
+    # failed run caps a later claim at UNVERIFIED, and nothing here verifies.
+    rewound: bool = False
 
     @property
     def tool_action(self) -> str:

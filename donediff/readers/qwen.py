@@ -73,9 +73,12 @@ _WRITE_TOOLS = frozenset({"write_file"})
 _EDIT_TOOLS = frozenset({"edit", "replace"})
 _CLAUDE_KEYS = ("isSidechain", "userType", "toolUseResult", "payload")
 # The trailer shell.ts writes on every finished run (L4196-4199), last copy wins.
+# The real "Error: " text before it can span lines, so it is not part of the
+# match (SEC-209): the command's output sits before the real trailer, so the
+# last match is always the real one. Not anchored at the end of the text:
+# Qwen appends notices after it, separated by a blank line (L4474, L4541).
 _TRAILER = re.compile(
-    r"^Error: (.*)\nExit Code: (-?\d+|\(none\))\nSignal: [^\n]*\nProcess Group PGID: [^\n]*$",
-    re.M)
+    r"^Exit Code: (-?\d+|\(none\))\nSignal: [^\n]*\nProcess Group PGID: [^\n]*$", re.M)
 _FINISHED = ("Command: ", "Directory: ")  # how a finished (not cancelled) result starts
 _BACKGROUND = "Background shell started."
 
@@ -189,8 +192,10 @@ def shell_text(text: str) -> tuple[int | None, str]:
     if not matches:
         return None, text
     last = matches[-1]
-    code = None if last.group(2) == "(none)" else int(last.group(2))
+    code = None if last.group(1) == "(none)" else int(last.group(1))
     head = text[:last.start()]
+    cut = head.rfind("\nError: ")  # the real Error line(s) sit right before Exit Code
+    head = head[:cut + 1] if cut >= 0 else head
     start = head.find("Output: ")
     body = head[start + len("Output: "):] if start >= 0 else head
     body = body[:-1] if body.endswith("\n") else body
@@ -198,6 +203,36 @@ def shell_text(text: str) -> tuple[int | None, str]:
 
 
 # -- the reader ---------------------------------------------------------------
+
+def _rewound(records: list[dict], chain: list[dict]) -> dict[str, list[dict]]:
+    """Records a rewind left behind, by branch point: off the active history
+    but descended from a record on it, so written after it. File order."""
+    on_chain = {r["uuid"] for r in chain}
+    by_id = {r["uuid"]: r for r in records}
+    branch: dict[str, str | None] = {}  # uuid -> its on-chain ancestor, or None
+    for record in records:
+        trail, current, found = [], record, None
+        while current is not None:
+            uuid = current["uuid"]
+            if uuid in on_chain:
+                found = uuid
+                break
+            if uuid in branch:
+                found = branch[uuid]
+                break
+            branch[uuid] = None  # provisional: also stops a cycle
+            trail.append(uuid)
+            parent = current.get("parentUuid")
+            current = by_id.get(parent) if isinstance(parent, str) else None
+        for uuid in trail:
+            branch[uuid] = found
+    left: dict[str, list[dict]] = {}
+    for record in records:
+        point = branch.get(record["uuid"])
+        if point is not None and record["uuid"] not in on_chain:
+            left.setdefault(point, []).append(record)
+    return left
+
 
 def _chain(records: list[dict]) -> list[dict]:
     """The active history: from the last record back to the root via parentUuid."""
@@ -241,7 +276,13 @@ class _Build:
             self.cwd = cwd
             self.session.cwd = self.session.cwd or cwd
 
-    def record(self, record: dict, ordinal: int) -> None:
+    def record(self, record: dict, ordinal: int, rewound: bool = False) -> None:
+        if rewound:  # evidence-only: its tool calls, never its text or prompts
+            if record["type"] == "assistant":
+                for part in _parts(record):
+                    if isinstance(part, dict) and isinstance(part.get("functionCall"), dict):
+                        self.tool(part["functionCall"], rewound=True)
+            return
         self.at(record)
         kind = record["type"]
         if kind == "user" and "subtype" not in record:
@@ -277,7 +318,7 @@ class _Build:
                 text=text, t=self.clock))
             self.index += 1
 
-    def tool(self, call: dict) -> None:
+    def tool(self, call: dict, rewound: bool = False) -> None:
         name = _str(call.get("name"))[:128]
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
         call_id = str(call.get("id", ""))[:256]
@@ -298,7 +339,7 @@ class _Build:
             action, tool_input = OTHER, args
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id, tool_input=tool_input,
-                      t=self.clock, cwd=cwd, result_seen=False)
+                      t=self.clock, cwd=cwd, result_seen=False, rewound=rewound)
         if action == SHELL:
             event.check_types = check_types(event.command)
         self.session.events.append(event)
@@ -324,6 +365,8 @@ class _Build:
             event.is_error = status == "error" or has_error
             return
         structured, code, body = shell_display(info.get("resultDisplay"))
+        # A failed outcome is a failure whatever the code says (SEC-209).
+        failed_outcome = structured and info["resultDisplay"].get("outcome") == "failed"
         if not structured:
             code, body = shell_text(text)
         elif not body:
@@ -336,11 +379,11 @@ class _Build:
             return
         if code is not None:
             event.exit_code = code
-            event.is_error = code != 0 or status == "error"
-            event.status = "failed" if code != 0 else "completed"
+            event.is_error = code != 0 or status == "error" or failed_outcome
+            event.status = "failed" if code != 0 or failed_outcome else "completed"
         else:
             event.status = status  # success, error or cancelled, with no exit code
-            event.is_error = status == "error"
+            event.is_error = status == "error" or failed_outcome
         event.failure_hint = bool(FAILURE_IN_OUTPUT.search(event.output))
         event.pass_hint = bool(PASS_IN_OUTPUT.search(event.output))
         event.passed_counts = passed_counts(event.output) if event.check_types else frozenset()
@@ -389,9 +432,15 @@ def parse_session(path: str | Path) -> Session:
             session.session_id = record["sessionId"][:128]
             break
     session.slug = session.session_id[:12]
+    left = _rewound(records, chain)
     build = _Build(session, _results(chain))
+    for uuid, behind in left.items():  # results of rewound calls, never over the chain's
+        for call_id, found in _results(behind).items():
+            build.results.setdefault(call_id, found)
     for ordinal, record in enumerate(chain):
         build.record(record, ordinal)
+        for behind in left.pop(record["uuid"], ()):  # right after its branch point
+            build.record(behind, ordinal, rewound=True)
     return session
 
 

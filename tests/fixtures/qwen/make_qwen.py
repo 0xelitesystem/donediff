@@ -133,11 +133,20 @@ def shell_display(output: str, code: int | None, outcome: str | None = None) -> 
             "outputFiles": []}
 
 
+EXIT_ONE_IS_NOT_ERROR = frozenset({"grep", "rg", "diff", "test", "[", "[["})  # shell.ts L423-430
+
+
 def shell(chat: Chat, call_id: str, command: str, code: int | None, out: str,
           structured: bool = True, text: str = "") -> None:
     chat.assistant(calls=[call(call_id, "run_shell_command",
                                {"command": command, "is_background": False})])
-    status = "error" if code else "success"
+    # shell.ts at 516e963f: a nonzero exit is an error (status "error", the
+    # text goes in error.message, L4524-4537) unless isShellExitError says
+    # otherwise: exit 1 from grep, rg, diff, test, [ or [[ (L423-430, L465-480)
+    # stays a success. A spawn error or timeout is also an error (L4508-4523).
+    first = command.split()[0] if command.split() else ""
+    exit_error = bool(code) and not (code == 1 and first in EXIT_ONE_IS_NOT_ERROR)
+    status = "error" if exit_error else "success"
     body = text or shell_text(command, out, code)
     display = shell_display(out, code) if structured else out
     if status == "error":
