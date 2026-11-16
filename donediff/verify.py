@@ -340,6 +340,25 @@ def _not_checked(skipped: set[str]) -> str:
     return "disk not checked (" + "; ".join(sorted(skipped)) + ")"
 
 
+# How a reader marks a write or edit that did not land (SEC-208): Gemini and
+# Qwen say cancelled or error, Codex failed or declined, OpenCode error.
+_FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejected", "declined"})
+
+
+def _write_failed(event: Event) -> bool:
+    """A write or edit the log says did not succeed. It stays an edit for
+    staleness (code may have changed: errs safe), but is no evidence that
+    the file was written."""
+    return event.is_error or (event.status or "").lower() in _FAILED_STATUS
+
+
+def _failed_write(claim: Claim, ctx: _Context, writes: list[Event], name: str) -> Finding:
+    last = writes[-1]
+    return _found(claim, ctx, Verdict.UNVERIFIED,
+                  f"the {last.tool_name} call for `{name}` did not succeed"
+                  f" ({last.status or 'error'})", last)
+
+
 def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
     """Write/Edit calls before the claim to a file with the claimed name."""
     name = Path(claim.detail).name
@@ -359,6 +378,10 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
     if not writes:
         return _unverified(claim, ctx,
                            f"no Write/Edit call for `{name}` appears before the claim")
+    done = [w for w in writes if not _write_failed(w)]
+    if not done:
+        return _failed_write(claim, ctx, writes, name)
+    writes = done
     last = writes[-1]
     if check_disk and session.cwd:
         candidates, skipped = _local_candidates(session, claim, writes)
@@ -472,6 +495,10 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
                     shell_paths.append((event, path))
     if not writes and not shell_paths:
         return _unverified(claim, ctx, f"no write to `{target}` appears before the claim")
+    done = [w for w in writes if not _write_failed(w)]
+    if writes and not done and not shell_paths:
+        return _failed_write(claim, ctx, writes, target)
+    writes = done
     last = writes[-1] if writes else shell_paths[-1][0]
     how = (f"{last.tool_name} call for `{target}` found" if writes
            else f"`{_short(last.command)}` wrote `{target}`")

@@ -41,7 +41,6 @@ later through donediff.shell.confined like every other transcript path.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -51,7 +50,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import complete_background, epoch
+from ..parser import complete_background, epoch, loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 
@@ -190,7 +189,7 @@ def session_meta(path: Path) -> dict | None:
                 line = line.strip()
                 if not line:
                     continue
-                record = json.loads(line.decode("utf-8", errors="replace"))
+                record = loads(line.decode("utf-8", errors="replace"))
                 break
             else:
                 return None
@@ -263,7 +262,7 @@ def exec_result(text: str) -> tuple[int | None, str | None, str]:
     stripped = text.lstrip()
     if stripped.startswith("{"):
         try:
-            data = json.loads(stripped)
+            data = loads(stripped)
         except ValueError:
             data = None
         if isinstance(data, dict) and isinstance(data.get("output"), str):
@@ -583,7 +582,7 @@ class _Parse:
         elif ptype == "function_call":
             raw = payload.get("arguments")
             try:
-                args = json.loads(raw) if isinstance(raw, str) else raw
+                args = loads(raw) if isinstance(raw, str) else raw
             except ValueError:
                 args = None
             args = args if isinstance(args, dict) else {}
@@ -665,7 +664,7 @@ def parse_rollout(path: str | Path) -> Session:
                     continue
                 state.line_no += 1
                 try:
-                    record = json.loads(line.decode("utf-8", errors="replace"))
+                    record = loads(line.decode("utf-8", errors="replace"))
                 except ValueError:
                     state.session.unrecognised += 1
                     continue

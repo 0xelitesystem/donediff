@@ -49,7 +49,6 @@ transcript path.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
@@ -57,7 +56,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import epoch
+from ..parser import epoch, loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 from .codex import _UNSAFE, _join, _lines, clean_path
@@ -184,7 +183,7 @@ def _read_json(path: Path) -> dict | None:
     if len(data) > MAX_JSON:
         return None
     try:
-        record = json.loads(data.decode("utf-8", errors="replace"))
+        record = loads(data.decode("utf-8", errors="replace"))
     except ValueError:
         return None
     return record if _is_meta(record) else None
@@ -205,7 +204,7 @@ def first_record(path: Path) -> dict | None:
                 line = line.strip()
                 if not line:
                     continue
-                record = json.loads(line.decode("utf-8", errors="replace"))
+                record = loads(line.decode("utf-8", errors="replace"))
                 return record if _is_meta(record) else None
     except (OSError, ValueError):
         return None
@@ -509,7 +508,7 @@ def parse_session(path: str | Path) -> Session:
                 if not line:
                     continue
                 try:
-                    record = json.loads(line.decode("utf-8", errors="replace"))
+                    record = loads(line.decode("utf-8", errors="replace"))
                 except ValueError:
                     session.unrecognised += 1
                     continue

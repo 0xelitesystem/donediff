@@ -35,6 +35,19 @@ from pathlib import Path
 from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from .models import CLAUDE_CODE_ACTIONS, SHELL, Delivery, Event, EventKind, Session
 
+def loads(text):
+    """json.loads, with a too-deep document raised as ValueError (SEC-207).
+
+    The one place donediff parses JSON: every caller's `except ValueError`
+    then counts a nested-bomb line as unreadable instead of crashing. A
+    guard test fails if a bare json.loads or json.load appears elsewhere.
+    """
+    try:
+        return json.loads(text)
+    except RecursionError as exc:
+        raise ValueError("JSON nested too deep") from exc
+
+
 _EXIT_CODE_RE = re.compile(r"[Ee]xit code:? (\d+)")
 _TS_RE = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?"
@@ -188,8 +201,8 @@ def parse_transcript(path: str | Path) -> Session:
                 continue
             line_no += 1
             try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
+                record = loads(line)
+            except ValueError:
                 continue
             if not isinstance(record, dict):
                 continue

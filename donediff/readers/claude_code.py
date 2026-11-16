@@ -7,11 +7,11 @@ actions through donediff.models.CLAUDE_CODE_ACTIONS.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .. import delegated, parser
 from ..models import Session
+from ..parser import loads
 from .qwen import is_qwen_record
 
 # Record types a Claude Code transcript starts with or holds.
@@ -36,7 +36,7 @@ def first_record(path: Path, limit: int = _DETECT_LIMIT) -> dict | None:
                 if not line:
                     continue
                 try:
-                    record = json.loads(line.decode("utf-8", errors="replace"))
+                    record = loads(line.decode("utf-8", errors="replace"))
                 except ValueError:
                     return None
                 return record if isinstance(record, dict) else None

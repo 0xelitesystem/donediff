@@ -41,7 +41,6 @@ and counted in Session.unrecognised.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sqlite3
@@ -51,6 +50,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
+from ..parser import loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 from .codex import clean_path, parse_patch
@@ -240,7 +240,7 @@ def _json(raw) -> dict | None:
     if not isinstance(raw, str):
         return None
     try:
-        data = json.loads(raw)
+        data = loads(raw)
     except ValueError:
         return None
     return data if isinstance(data, dict) else None

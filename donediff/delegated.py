@@ -32,7 +32,6 @@ agent has not finished.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path
@@ -42,7 +41,7 @@ from .gaming import signals_for_event
 from .models import CLAUDE_CODE_ACTIONS, FILE_ACTIONS, SHELL, Event, EventKind, Session, Source
 from .parser import (
     background_done, background_id, complete_background, epoch, exit_code_of,
-    notice_text,
+    loads, notice_text,
 )
 from .redact import redact_secrets
 
@@ -116,7 +115,7 @@ def _label(source: Source) -> str:
         if meta.stat().st_size > _META_LIMIT:
             return ""
         with open(meta, encoding="utf-8") as fh:
-            data = json.load(fh)
+            data = loads(fh.read())
     except (OSError, ValueError):
         return ""
     text = data.get("description") if isinstance(data, dict) else None
@@ -153,7 +152,7 @@ def _line_time(line: bytes) -> bytes | None:
 def _complete(line: bytes, background: dict, source: Source) -> None:
     """Pair a completion notice with the background command it reports on."""
     try:
-        record = json.loads(line)
+        record = loads(line)
     except ValueError:
         return
     if not isinstance(record, dict):
@@ -211,7 +210,7 @@ def read_source(source: Source) -> Source:
                 if not any(i.decode("utf-8", "replace") in pending for i in ids):
                     continue
             try:
-                record = json.loads(line)
+                record = loads(line)
             except ValueError:
                 continue
             if not isinstance(record, dict):
@@ -282,7 +281,7 @@ def read_source(source: Source) -> Source:
     # The agent finished when it wrote its last record. A last line that
     # does not parse is still being written: the agent has not finished.
     try:
-        json.loads(last_line) if last_line else None
+        loads(last_line) if last_line else None
     except ValueError:
         source.finished = None
         return source
