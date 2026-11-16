@@ -4,7 +4,7 @@
   "session_id": "golden-noresult-codex",
   "cwd": "/home/dev/golden",
   "scope": {
-    "main_only": true,
+    "main_only": false,
     "subagent_transcripts": 0,
     "workflow_agent_transcripts": 0,
     "bytes": 0,

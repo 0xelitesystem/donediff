@@ -3,7 +3,7 @@
 - **Transcript:** `noresult-codex.jsonl`
 - **Project:** `/home/dev/golden`
 - **Score:** 25/100 (F)
-- **Scope:** evidence from the main transcript only (--main-only)
+- **Scope:** evidence from the main transcript; no sub-agent or workflow transcripts found
 
 ## Claims
 

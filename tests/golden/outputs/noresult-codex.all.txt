@@ -1,7 +1,7 @@
 
 [1m[36m  donediff[0m[2m, claims vs. reality[0m
 [2m  session golden-nores · 4 events · /home/dev/golden[0m
-[2m  evidence from the main transcript only (--main-only)[0m
+[2m  evidence from the main transcript; no sub-agent or workflow transcripts found[0m
 
   [1mDONEDIFF SCORE[0m  [1m[31m25/100 (F)[0m
 [2m  0 verified · 0 stale · 2 unverified · 0 contradicted[0m

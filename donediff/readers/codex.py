@@ -30,6 +30,11 @@ codex-rs/protocol, at commit 81b995a6c9a4; the format is internal and moves):
   function form ({"input": patch}) and a shell argv ["apply_patch", patch].
   "*** Add File" becomes a write, "*** Update File" an edit (one hunk) or a
   multi_edit (several), with context lines in both old and new text.
+- Code mode (0.169.0+): one custom tool "exec" whose input is JavaScript
+  calling `tools.<name>(...)`; read in codex_code_mode.py. Its nested calls get
+  a status from Codex's own result header only, never an exit code.
+- Paginated rollouts also carry item_completed AgentMessage items: their text
+  counts as a claim only when no assistant message record carries the same text.
 - Sub-agents: none read in this version (main transcript only).
 
 Lines are read in binary, one at a time, capped at MAX_LINE bytes; a longer
@@ -45,6 +50,8 @@ import os
 import re
 import shlex
 import sys
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -52,6 +59,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import complete_background, epoch, loads
 from ..shell import is_remote_path
+from . import codex_code_mode as code_mode
 from .base import UnreadableSession
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
@@ -85,6 +93,7 @@ _HEADER_LINE = re.compile(
 _EXITED = re.compile(r"^(?:Process exited with code|Exit code:) (-?\d+)$", re.MULTILINE)
 _RUNNING = re.compile(r"^Process running with session ID (\S+)$", re.MULTILINE)
 _TRUNCATED = "... command output truncated for persistence ..."
+UNCERTAIN = "outcome uncertain"  # a code-mode call in a script that branched or held several
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]")
 
 
@@ -351,6 +360,15 @@ def parse_patch(text: str) -> list[tuple[str, str, object]]:
 
 # -- the reader ---------------------------------------------------------------
 
+@dataclass
+class _Exec:
+    """A code-mode exec call: the events of its nested calls, awaiting its result."""
+
+    events: list[Event] = field(default_factory=list)
+    calls: int = 0  # nested calls read
+    straight: bool = True  # see codex_code_mode.Scan.straight
+
+
 class _Parse:
     """One pass over a rollout, building the Session."""
 
@@ -365,6 +383,11 @@ class _Parse:
         self.calls: dict[str, list[Event]] = {}  # call_id -> its events, kept
         self.stdin: dict[str, str] = {}  # write_stdin call_id -> process session id
         self.running: dict[str, tuple[Event, frozenset]] = {}  # process session id -> launch
+        self.execs: dict[str, _Exec] = {}  # code-mode exec call_id -> its nested calls
+        self.cells: dict[str, str] = {}  # running code-mode cell id -> exec call_id
+        self.waits: dict[str, str] = {}  # wait call_id -> cell id
+        self.said: Counter = Counter()  # assistant texts from message records
+        self.item_said: Counter = Counter()  # assistant texts from AgentMessage items
 
     # events
 
@@ -386,16 +409,18 @@ class _Parse:
             self.calls[call_id] = events
 
     def shell(self, name: str, call_id: str, command: str, workdir: str = "",
-              status: str = "") -> None:
+              status: str = "", track: bool = True) -> list[Event]:
         # A heredoc patch through the shell (`apply_patch <<EOF`) stays a shell command.
         event = self._event(name, SHELL, call_id, {"command": command},
                             _join(self.cwd, clean_path(workdir)))
         event.status = status
         if status in _ENDED:  # the call record itself says how the run ended
             event.result_seen = True
-        self._track(call_id, [event])
+        if track:
+            self._track(call_id, [event])
+        return [event]
 
-    def patch(self, name: str, call_id: str, text: str) -> None:
+    def patch(self, name: str, call_id: str, text: str, track: bool = True) -> list[Event]:
         events = []
         for op, path, data in parse_patch(text):
             if op == "add":
@@ -415,10 +440,74 @@ class _Parse:
                 events.append(self._event(name, OTHER, call_id, {"file_path": path}))
         if not events:
             events.append(self._event(name, OTHER, call_id, {}))
-        self._track(call_id, events)
+        if track:
+            self._track(call_id, events)
+        return events
 
-    def other(self, name: str, call_id: str, tool_input: dict) -> None:
-        self._track(call_id, [self._event(name, OTHER, call_id, tool_input)])
+    def other(self, name: str, call_id: str, tool_input: dict,
+              track: bool = True) -> list[Event]:
+        events = [self._event(name, OTHER, call_id, tool_input)]
+        if track:
+            self._track(call_id, events)
+        return events
+
+    # code mode
+
+    def code_mode(self, call_id: str, source) -> None:
+        """An exec call: an event for each nested call read from its JavaScript."""
+        scan = code_mode.scan(source)
+        self.session.unrecognised += scan.unparsed
+        cell = _Exec(straight=scan.straight)
+        for n, (name, arg) in enumerate(scan.calls, start=1):
+            sub_id = f"{call_id}#{n}" if call_id else ""
+            events = self._nested(name, sub_id, arg)
+            if events:
+                cell.calls += 1
+                cell.events += events
+            else:
+                cell.straight = False
+        if call_id and cell.events:
+            self.execs[call_id] = cell
+
+    def _nested(self, name: str, call_id: str, arg) -> list[Event]:
+        if name in _PATCH_TOOLS:
+            if isinstance(arg, str):
+                return self.patch(name, call_id, arg, track=False)
+        elif name in _SHELL_FUNCTIONS:
+            if isinstance(arg, dict):
+                return self._shell_call(name, call_id, arg, track=False)
+        elif arg is code_mode.NO_ARG or isinstance(arg, dict):
+            return self.other(name, call_id, {} if arg is code_mode.NO_ARG else arg,
+                              track=False)
+        else:
+            return self.other(name, call_id, {"input": arg}, track=False)
+        self.session.unrecognised += 1  # a known tool with an input it does not take
+        return []
+
+    def _code_mode_result(self, call_id: str, raw) -> None:
+        """An exec or wait result: Codex's header sets every nested call's status."""
+        found = code_mode.header(raw)
+        if found is None:
+            return  # a notify() string or another shape: no outcome in it
+        state, cell_id = found
+        if state == code_mode.RUNNING:
+            self.cells[cell_id] = call_id
+            return
+        cell = self.execs.pop(call_id, None)
+        if cell is None:
+            return
+        certain = state == code_mode.COMPLETED and cell.straight
+        status = state if state != code_mode.COMPLETED else (
+            code_mode.COMPLETED if certain else UNCERTAIN)
+        text = code_mode.body(raw) if cell.calls == 1 else ""
+        for event in cell.events:
+            event.result_seen = True
+            event.status = status
+            event.output = text
+            # Never an exit code, never hints from printed text: a shell run
+            # reads as status only, whatever the script or command printed.
+            if event.tool_action != SHELL and not certain:
+                event.is_error = True  # a failed or uncertain write is no evidence
 
     # results
 
@@ -441,6 +530,15 @@ class _Parse:
         self._hints(event)
 
     def output(self, call_id: str, raw) -> None:
+        if call_id in self.execs:
+            self._code_mode_result(call_id, raw)
+            return
+        if call_id in self.waits:
+            found = code_mode.header(raw)
+            if found is not None and found[0] != code_mode.RUNNING:
+                exec_id = self.cells.pop(self.waits[call_id], None)
+                if exec_id is not None:
+                    self._code_mode_result(exec_id, raw)
         events = self.pending.pop(call_id, None)
         if not events:
             return
@@ -484,6 +582,12 @@ class _Parse:
 
     def item_completed(self, item: dict) -> None:
         kind = item.get("type")
+        if kind == "AgentMessage":
+            content = item.get("content")
+            for part in content if isinstance(content, list) else []:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    self._said(part["text"], self.item_said, self.said)
+            return
         events = self.calls.get(str(item.get("id", "")))
         if not events:
             return
@@ -591,6 +695,8 @@ class _Parse:
             text = payload.get("input") if isinstance(payload.get("input"), str) else ""
             if name in _PATCH_TOOLS:
                 self.patch(name, call_id, text)
+            elif name == code_mode.EXEC_TOOL:
+                self.code_mode(call_id, payload.get("input"))
             else:
                 self.other(name, call_id, {"input": text})
         elif ptype == "local_shell_call":
@@ -607,25 +713,31 @@ class _Parse:
         elif ptype in ("function_call_output", "custom_tool_call_output"):
             self.output(call_id, payload.get("output"))
 
+    def _shell_call(self, name: str, call_id: str, args: dict,
+                    track: bool = True) -> list[Event]:
+        command = args.get("cmd")
+        if not isinstance(command, str):
+            command = args.get("command")
+        argv = command if isinstance(command, list) else None
+        if argv is not None and len(argv) == 2 and argv[0] in _PATCH_TOOLS:
+            return self.patch(name, call_id, str(argv[1]), track=track)
+        command = argv_command(argv) if argv is not None else (
+            command if isinstance(command, str) else "")
+        workdir = args.get("workdir")
+        return self.shell(name, call_id, command,
+                          workdir if isinstance(workdir, str) else "", track=track)
+
     def function_call(self, name: str, call_id: str, args: dict) -> None:
         if name in _SHELL_FUNCTIONS:
-            command = args.get("cmd")
-            if not isinstance(command, str):
-                command = args.get("command")
-            argv = command if isinstance(command, list) else None
-            if argv is not None and len(argv) == 2 and argv[0] in _PATCH_TOOLS:
-                self.patch(name, call_id, str(argv[1]))
-                return
-            command = argv_command(argv) if argv is not None else (
-                command if isinstance(command, str) else "")
-            workdir = args.get("workdir")
-            self.shell(name, call_id, command, workdir if isinstance(workdir, str) else "")
+            self._shell_call(name, call_id, args)
         elif name in _PATCH_TOOLS:
             text = args.get("input")
             self.patch(name, call_id, text if isinstance(text, str) else "")
         else:
             if name == "write_stdin" and call_id:
                 self.stdin[call_id] = str(args.get("session_id", ""))
+            if name == code_mode.WAIT_TOOL and call_id and isinstance(args.get("cell_id"), str):
+                self.waits[call_id] = args["cell_id"]
             self.other(name, call_id, args)
 
     def message(self, payload: dict) -> None:
@@ -636,17 +748,28 @@ class _Parse:
             if isinstance(content, list) else []
         if role == "assistant":
             for text in texts:
-                text = text.strip()
-                if text:
-                    self.session.events.append(Event(
-                        kind=EventKind.TEXT, index=self.index, timestamp=self.timestamp,
-                        text=text, t=self.clock))
-                    self.index += 1
+                self._said(text, self.said, self.item_said)
         elif role == "user" and texts:
             first = texts[0].lstrip()
             if first and not first.startswith(("<", "# AGENTS.md")):
                 self.session.prompt_starts.append(self.index)
                 self.session.prompt_marks.append((self.index, self.line_no))
+
+
+    def _said(self, text: str, mine: Counter, other: Counter) -> None:
+        """An assistant text, once: the same text from the other record kind
+        (message record or AgentMessage item) is not a second claim."""
+        text = text.strip()
+        if not text:
+            return
+        if other[text] > 0:
+            other[text] -= 1
+            return
+        mine[text] += 1
+        self.session.events.append(Event(
+            kind=EventKind.TEXT, index=self.index, timestamp=self.timestamp,
+            text=text, t=self.clock))
+        self.index += 1
 
 
 def parse_rollout(path: str | Path) -> Session:
@@ -738,6 +861,7 @@ class CodexReader:
         return parse_rollout(path)
 
     def attach_sources(self, session: Session) -> Session:
+        session.main_only = False  # not --main-only: the scope line must not say so
         return session  # no sub-agent transcripts are read for Codex yet
 
 

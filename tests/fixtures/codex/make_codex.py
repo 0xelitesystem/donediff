@@ -164,6 +164,61 @@ def paginated_demo(session_id: str = "codexdemo-paged-0001") -> list[dict]:
     return records
 
 
+# -- code mode (Codex CLI 0.169.0, tag rust-v0.169.0 = d32063f96c2d) -------------
+# Shapes from codex-rs at that commit, never from a real log:
+# - the exec call: a custom_tool_call named "exec" whose input is JavaScript
+#   (code-mode-protocol/src/lib.rs:61, core/src/tools/code_mode/execute_spec.rs);
+# - its result: a list of input_text parts, part 0 the header
+#   "<status>\nWall time N seconds\nOutput:\n" (core/src/tools/code_mode/output.rs:28-33),
+#   status from core/src/tools/code_mode/mod.rs:311-325, a failed script ending
+#   with "Script error:\n<text>" (mod.rs:296-300);
+# - notify(): an extra output for the same call as a plain string (delegate.rs:464-488);
+# - wait: a function_call {cell_id} with a result in the same format (wait_handler.rs).
+
+REJECTED = ("patch rejected: writing is blocked by read-only sandbox; "
+            "rejected by user approval settings")
+
+
+def js(text: str) -> str:
+    """A JavaScript string literal for text (a JSON string is one)."""
+    return json.dumps(text)
+
+
+def exec_call(clock: Clock, call_id: str, source: str) -> dict:
+    return clock.line("response_item", {
+        "type": "custom_tool_call", "id": "ctc_" + call_id, "call_id": call_id,
+        "name": "exec", "input": source, "status": "completed",
+        "internal_chat_message_metadata_passthrough": None})
+
+
+def exec_result(clock: Clock, call_id: str, status: str, parts: list[str],
+                wall: str = "0.0") -> dict:
+    output = [{"type": "input_text", "text": f"{status}\nWall time {wall} seconds\nOutput:\n"}]
+    output += [{"type": "input_text", "text": p} for p in parts]
+    return clock.line("response_item", {"type": "custom_tool_call_output",
+                                        "call_id": call_id, "output": output})
+
+
+def new_records(clock: Clock, session_id: str) -> list[dict]:
+    """The record types 0.169.0 writes that carry no tool evidence."""
+    def completed(item):
+        return clock.line("event_msg", {"type": "item_completed", "thread_id": session_id,
+                                        "turn_id": "turn-1", "item": item})
+    return [
+        clock.line("event_msg", {"type": "thread_settings_applied", "thread_id": session_id,
+                                 "thread_settings": {}}),
+        clock.line("world_state", {"full": True, "state": {}}),
+        clock.line("response_item", {"type": "additional_tools", "tools": []}),
+        completed({"type": "UserMessage", "id": "u1",
+                   "content": [{"type": "text", "text": "Add a hello script."}]}),
+        completed({"type": "Reasoning", "id": "r1", "summary_text": [], "raw_content": []}),
+        clock.line("token_usage_record", {"thread_id": session_id, "turn_id": "turn-1",
+                                          "session_id": session_id, "root_turn_id": "turn-1",
+                                          "response_id": "resp-1", "usage": {},
+                                          "turn_token_usage": {}, "thread_token_usage": {}}),
+    ]
+
+
 def write(path: Path, records: list[dict], compress: bool = False) -> Path:
     """Write a rollout; compress=True writes .jsonl.zst (needs Python 3.14)."""
     data = ("\n".join(json.dumps(r) for r in records) + "\n").encode("utf-8")
