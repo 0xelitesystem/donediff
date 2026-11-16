@@ -190,7 +190,7 @@ def test_no_exit_code_gives_status_never_a_made_up_code(tmp_path):
     result = cli.run_audit(str(path), check_disk=False, agent="codex")
     finding = result.findings[0]
     assert finding.verdict is Verdict.UNVERIFIED
-    assert "no exit code in the log (status not recorded)" in finding.evidence
+    assert "the log has a status only (not recorded)" in finding.evidence
     assert "exit 0" not in finding.evidence
 
 

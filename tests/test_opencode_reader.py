@@ -131,7 +131,8 @@ def test_status_only_is_unverified_and_says_status(tmp_path, schema):
     assert run.exit_code is None and run.status == "completed" and run.result_seen is True
     finding = by_type(result, ClaimType.TESTS_PASS)[0]
     assert finding.verdict is Verdict.UNVERIFIED
-    assert "status completed" in finding.evidence and "exit 0" not in finding.evidence
+    assert "the log has a status only (completed)" in finding.evidence
+    assert "exit 0" not in finding.evidence and "exit code" not in finding.evidence
 
 
 @pytest.mark.parametrize("schema", SCHEMAS)

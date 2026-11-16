@@ -83,7 +83,7 @@ def test_control_d_codex_status_completed_without_output_stays_unverified(tmp_pa
                               "action": {"type": "exec", "command": ["pytest", "-q"]}})
     finding, _ = _tests_finding(_rollout(tmp_path, [call]), "codex")
     assert finding.verdict == Verdict.UNVERIFIED
-    assert "no exit code in the log (status completed)" in finding.evidence
+    assert "the log has a status only (completed)" in finding.evidence
 
 
 def test_control_claude_code_result_present_is_verified(tmp_path):

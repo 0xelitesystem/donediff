@@ -265,7 +265,7 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
             reason = (f"exit {run.exit_code}" if run.exit_code is not None
                       else f"status {run.status}" if run.status else "exit ?")
         elif run.exit_code is None and run.status:
-            reason = "output reports failures, no exit code in the log"
+            reason = "output reports failures, the log has a status only"
         else:
             reason = "output reports failures despite exit 0"
         return _found(claim, ctx, Verdict.CONTRADICTED,
@@ -276,10 +276,11 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
         return _found(claim, ctx, Verdict.UNVERIFIED,
                       f"{reason}: `{_short(run.command)}`", run)
     if run.exit_code is None and run.status:
-        # A reader with no exit code for this run (Codex) gives its status;
-        # no exit code is no proof of success.
+        # A reader with no exit code for this run (Codex, opencode tool parts)
+        # gives its status; a status alone is no proof of success. The wording
+        # says "status", never "exit code" (CEO rule, D087).
         return _found(claim, ctx, Verdict.UNVERIFIED,
-                      f"no exit code in the log (status {run.status}): "
+                      f"the log has a status only ({run.status}), no proof of success: "
                       f"`{_short(run.command)}`", run)
     if kind in CHECK_TYPES:
         # Only edits inside the folder the check ran in make it stale: a
