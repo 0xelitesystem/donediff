@@ -16,13 +16,17 @@ donediff now reads more coding agents than Claude Code.
     unrecognised record.
   - opencode: its SQLite database (`$OPENCODE_DB`, or `opencode/opencode.db`
     under `$XDG_DATA_HOME` or `~/.local/share`), both table layouts.
-  - Gemini CLI: chat files under `~/.gemini/tmp`, replayed the way Gemini
-    loads them (rewinds and patches included), and the older one-file
-    `.json` sessions.
+  - Gemini CLI: chat files under `~/.gemini/tmp`, replayed following Gemini
+    CLI's own loading rules (rewinds and patches included), and the older
+    one-file `.json` sessions.
   - Qwen Code: chat files under `~/.qwen/projects` (and the older
-    `tmp/<id>/chats`), following the active history the way Qwen resumes it.
+    `tmp/<id>/chats`), following the active history by Qwen Code's own
+    resume rules.
   - Cline: session files under `~/.cline/data/sessions`.
   - Goose: its `sessions.db`, schema version 18 only.
+  - A reader listed here is built from that agent's published code and file
+    formats and tested on sample sessions in that shape. It is not a
+    statement that donediff has been tested on real runs of that agent.
 - An exit code is taken only from the field where each agent records one.
   Where an agent logs a status and no exit code, the finding says "the log
   has a status only" and never "exit code".
