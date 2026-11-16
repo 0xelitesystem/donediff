@@ -1,7 +1,7 @@
 # donediff audit
 
 - **Transcript:** `demo-session.jsonl`
-- **Project:** `/home/dev/acme-api`
+- **Project:** `~/acme-api`
 - **Score:** 0/100 (F)
 - **Scope:** evidence from the main transcript; no sub-agent or workflow transcripts found
 

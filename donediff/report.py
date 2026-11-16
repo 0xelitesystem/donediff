@@ -28,6 +28,37 @@ def _safe(text: str) -> str:
     return _UNSAFE_CHARS.sub(_escape_char, text)
 
 
+# A home folder at the start of a path: <drive>:\\Users\\<name> (either slash),
+# /home/<name> or /Users/<name>. Matched by pattern, not only against this
+# machine's home: the cwd and commands come from the log, which may have been
+# written on another machine (SEC-220).
+_HOME_PREFIX = re.compile(r"(?<![\w.\\/:-])(?:[A-Za-z]:[\\/]+Users[\\/]+|/home/|/Users/)[^\\/\s\"'`|<>]+")
+
+
+def _own_home() -> str:
+    try:
+        return os.path.expanduser("~")
+    except (KeyError, RuntimeError):
+        return ""
+
+
+def home_as_tilde(text: str) -> str:
+    """The text with each home-folder prefix shown as ~, so a JSON or Markdown
+    report shared in CI or an issue carries no user name (SEC-220)."""
+    if not text:
+        return text
+    home = _own_home().rstrip("\\/")
+    if len(home) > 3:  # this machine's home, wherever it lives, in either slash style
+        for form in {home, home.replace("\\", "/")}:
+            text = re.sub(re.escape(form) + r"(?=[\\/]|$)", "~", text,
+                          flags=re.IGNORECASE)
+    return _HOME_PREFIX.sub("~", text)
+
+
+def _shown(text: str, full_paths: bool) -> str:
+    return text if full_paths or not isinstance(text, str) else home_as_tilde(text)
+
+
 _RESET = "\x1b[0m"
 _BOLD = "\x1b[1m"
 _DIM = "\x1b[2m"
@@ -160,14 +191,14 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
     return "\n".join(lines)
 
 
-def _finding_dict(finding: Finding) -> dict:
+def _finding_dict(finding: Finding, full_paths: bool = False) -> dict:
     return {
         "type": finding.claim.type.value,
         "quote": finding.claim.quote,
         "sentence": finding.claim.sentence or finding.claim.quote,
         "detail": finding.claim.detail,
         "verdict": finding.verdict.value,
-        "evidence": finding.evidence,
+        "evidence": _shown(finding.evidence, full_paths),
         "claim_event": finding.claim.event_index,
         "evidence_event": finding.evidence_index,
         "evidence_source": finding.evidence_source,
@@ -175,13 +206,15 @@ def _finding_dict(finding: Finding) -> dict:
     }
 
 
-def render_json(result: AuditResult) -> str:
+def render_json(result: AuditResult, full_paths: bool = False) -> str:
+    """The JSON report. Home folders in paths and quoted commands show as ~
+    unless full_paths (--full-paths); the keys are the same either way."""
     scan = result.session.scan
     return json.dumps({
         "version": __version__,
-        "transcript": result.session.path,
+        "transcript": _shown(result.session.path, full_paths),
         "session_id": result.session.session_id,
-        "cwd": result.session.cwd,
+        "cwd": _shown(result.session.cwd, full_paths),
         "scope": {
             "main_only": result.session.main_only,
             "subagent_transcripts": scan.subagents,
@@ -193,23 +226,24 @@ def render_json(result: AuditResult) -> str:
         "score": result.score,
         "grade": result.grade,
         "counts": result.counts(),
-        "claims": [_finding_dict(f) for f in result.findings],
+        "claims": [_finding_dict(f, full_paths) for f in result.findings],
         "gaming_signals": [{
             "kind": s.kind,
             "severity": s.severity.value,
-            "description": s.description,
+            "description": _shown(s.description, full_paths),
             "event": s.event_index,
             "source": s.source,
         } for s in result.gaming_signals],
     }, indent=2)
 
 
-def render_markdown(result: AuditResult) -> str:
+def render_markdown(result: AuditResult, full_paths: bool = False) -> str:
+    """The Markdown report; home folders show as ~ unless full_paths, as in JSON."""
     lines = [
         "# donediff audit",
         "",
         f"- **Transcript:** `{_safe(Path(result.session.path).name)}`",
-        f"- **Project:** `{_safe(result.session.cwd or 'unknown')}`",
+        f"- **Project:** `{_safe(_shown(result.session.cwd, full_paths) or 'unknown')}`",
         f"- **Score:** {result.score if result.score is not None else 'n/a'}"
         f"/100 ({result.grade})",
         f"- **Scope:** {_safe(scope_line(result.session))}",
@@ -222,7 +256,7 @@ def render_markdown(result: AuditResult) -> str:
     for finding in result.findings:
         _, symbol, label = _VERDICT_STYLE[finding.verdict]
         quote = _safe(finding.claim.quote).replace("|", "\\|")
-        evidence = _safe(finding.evidence).replace("|", "\\|")
+        evidence = _safe(_shown(finding.evidence, full_paths)).replace("|", "\\|")
         lines.append(f"| {symbol} {label} | {quote} | {evidence} |")
     if result.gaming_signals:
         lines += ["", "## Gaming signals", ""]
@@ -230,7 +264,7 @@ def render_markdown(result: AuditResult) -> str:
             if signal is None:
                 lines.append(f"- ... and {more} more of this kind (all in the JSON report)")
                 continue
-            text = _safe(_signal_text(signal))
+            text = _safe(_shown(_signal_text(signal), full_paths))
             lines.append(f"- **{signal.severity.value.upper()}**: {text}")
     lines.append("")
     return "\n".join(lines)

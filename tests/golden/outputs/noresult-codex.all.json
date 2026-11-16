@@ -2,7 +2,7 @@
   "version": "<version>",
   "transcript": "tests/golden/inputs/noresult-codex.jsonl",
   "session_id": "golden-noresult-codex",
-  "cwd": "/home/dev/golden",
+  "cwd": "~/golden",
   "scope": {
     "main_only": false,
     "subagent_transcripts": 0,

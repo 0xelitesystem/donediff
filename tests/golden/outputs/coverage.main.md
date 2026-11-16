@@ -1,7 +1,7 @@
 # donediff audit
 
 - **Transcript:** `coverage.jsonl`
-- **Project:** `/home/dev/golden`
+- **Project:** `~/golden`
 - **Score:** 4/100 (F)
 - **Scope:** evidence from the main transcript only (--main-only)
 

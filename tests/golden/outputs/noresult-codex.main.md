@@ -1,7 +1,7 @@
 # donediff audit
 
 - **Transcript:** `noresult-codex.jsonl`
-- **Project:** `/home/dev/golden`
+- **Project:** `~/golden`
 - **Score:** 25/100 (F)
 - **Scope:** evidence from the main transcript only (--main-only)
 

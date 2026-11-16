@@ -1,7 +1,7 @@
 # donediff audit
 
 - **Transcript:** `noresult-claude.jsonl`
-- **Project:** `/home/dev/golden`
+- **Project:** `~/golden`
 - **Score:** 62/100 (D)
 - **Scope:** evidence from the main transcript only (--main-only)
 

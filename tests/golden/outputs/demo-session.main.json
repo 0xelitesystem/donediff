@@ -2,7 +2,7 @@
   "version": "<version>",
   "transcript": "examples/demo-session.jsonl",
   "session_id": "demo",
-  "cwd": "/home/dev/acme-api",
+  "cwd": "~/acme-api",
   "scope": {
     "main_only": true,
     "subagent_transcripts": 0,

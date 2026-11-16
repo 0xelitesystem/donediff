@@ -2,7 +2,7 @@
   "version": "<version>",
   "transcript": "tests/golden/inputs/coverage.jsonl",
   "session_id": "golden-coverage",
-  "cwd": "/home/dev/golden",
+  "cwd": "~/golden",
   "scope": {
     "main_only": true,
     "subagent_transcripts": 0,

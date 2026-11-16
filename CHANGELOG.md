@@ -57,6 +57,12 @@ donediff now reads more coding agents than Claude Code.
   output. (Goose logs no record of a cancel, so a cancelled Goose command
   still reads as the error it logged.)
 - Gaming signals on a rewound call end with "(rewound)".
+- JSON and Markdown reports show a home folder as `~` (for example
+  `/home/<name>/project` becomes `~/project`) in the transcript path, the
+  project folder, evidence and gaming-signal text, so a report attached to a
+  CI run or an issue carries no user name. The JSON keys are the same; only
+  these values are shorter. `--full-paths` keeps the full paths. The terminal
+  report is unchanged.
 
 ### Fixed
 

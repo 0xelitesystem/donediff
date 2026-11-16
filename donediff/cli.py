@@ -14,6 +14,9 @@ Options:
   --fail-under N    exit 1 if the donediff score is below N, exit 3 if the
                     session has no score (CI gate)
   --no-color        disable ANSI colors
+  --full-paths      JSON and Markdown reports show home folders in full; by
+                    default a home folder (C:\\Users\\<name>, /home/<name>,
+                    /Users/<name>) shows as ~
   --agent NAME      transcript reader: auto (default), claude-code, codex,
                     opencode, gemini, qwen, cline or goose (opencode and goose
                     target: a session id, the database path, or the database
@@ -127,12 +130,13 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     # traceback and never exit 1, which means "below --fail-under" (QA-025).
     if args.md:
         try:
-            Path(args.md).write_text(render_markdown(result), encoding="utf-8")
+            Path(args.md).write_text(render_markdown(result, full_paths=args.full_paths),
+                                     encoding="utf-8")
         except OSError as exc:
             return _cannot_write(args.md, exc)
     try:
         if args.json:
-            print(render_json(result))
+            print(render_json(result, full_paths=args.full_paths))
         else:
             color = False if args.no_color else None
             print(render_terminal(result, color=color))
@@ -197,6 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="exit 1 if the donediff score is below N, "
                             "exit 3 if the session has no score (for CI)")
     audit.add_argument("--no-color", action="store_true", help="plain output")
+    audit.add_argument("--full-paths", action="store_true",
+                       help="JSON and Markdown keep home folders in paths (shown as ~ by default)")
     audit.add_argument("--agent", choices=AGENT_CHOICES, default="auto",
                        help="which coding agent wrote the transcript (default: auto)")
     audit.set_defaults(func=_cmd_audit)
