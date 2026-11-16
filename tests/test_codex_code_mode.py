@@ -98,12 +98,12 @@ def test_rejected_patch_never_verifies_the_file_claim(tmp_path):
 
 
 def test_write_with_no_output_record_never_verifies(tmp_path):
-    """SEC-208: an exec with no result has result_seen False, so verify._write_failed holds."""
+    """SEC-208: an exec with no result has result_seen False, so verify.evidence_of_success is False."""
     clock, lines = start()
     lines += [mk.exec_call(clock, "c1", patch_js()),
               say(clock, "I created `hello.py`.")]
     [event] = parse(tmp_path, lines).tool_calls()
-    assert event.result_seen is False and verify._write_failed(event)
+    assert event.result_seen is False and not verify.evidence_of_success(event)[0]
     result = audit(tmp_path, lines)
     assert result.findings and all(f.verdict is not Verdict.VERIFIED for f in result.findings)
     assert any("no result was recorded" in f.evidence for f in result.findings)
@@ -116,7 +116,7 @@ def test_unknown_outcome_wording(tmp_path):
     lines += [mk.exec_call(clock, "c1", source), mk.exec_result(clock, "c1", DONE, []),
               say(clock, "I created `hello.py`.")]
     [event] = [e for e in parse(tmp_path, lines).tool_calls() if e.tool_action == WRITE]
-    assert event.is_error and verify._write_failed(event)
+    assert event.is_error and not verify.evidence_of_success(event)[0]
     assert verify._write_why(event) == (
         "has an unknown outcome: the log does not show whether it ran")
     result = audit(tmp_path, lines)

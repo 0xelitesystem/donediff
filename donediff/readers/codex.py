@@ -292,6 +292,23 @@ def exec_result(text: str) -> tuple[int | None, str | None, str]:
             running.group(1) if running and not exited else None, body)
 
 
+# apply_patch's own summary on success (codex-rs apply-patch print_summary).
+_PATCH_SUCCESS = "Success. Updated the following files:"
+
+
+def _patch_status(text: str, success: bool | None) -> tuple[str, bool]:
+    """(status, is_error) of an apply_patch result. "completed" only from an
+    explicit success record: an exit code in the result's header or metadata,
+    the success flag, or Codex's own success summary leading the result body.
+    Anything else is "unknown": the absence of a failure is not a success (D087)."""
+    code, _, body = exec_result(text)
+    if code is not None:
+        return ("completed", False) if code == 0 else ("failed", True)
+    if success is True or body.lstrip().startswith(_PATCH_SUCCESS):
+        return "completed", False
+    return "unknown", False
+
+
 def parse_patch(text: str) -> list[tuple[str, str, object]]:
     """The file operations of an apply_patch body.
 
@@ -556,6 +573,8 @@ class _Parse:
                 event.output = text
                 if success is False or "verification failed" in text[:200]:
                     event.is_error = True
+                elif event.is_file_edit() and event.status != "completed":
+                    event.status, event.is_error = _patch_status(text, success)
                 if event.tool_name == "write_stdin":
                     self._stdin_output(call_id, text)
 
@@ -598,9 +617,11 @@ class _Parse:
             return
         status = item.get("status") if isinstance(item.get("status"), str) else ""
         if kind == "FileChange":
-            if status in ("failed", "declined"):
-                for event in events:
-                    event.is_error = True
+            for event in events:
+                if status in ("failed", "declined"):
+                    event.is_error, event.status = True, "error"
+                elif status == "completed" and not event.is_error:
+                    event.status = "completed"  # Codex's own success record (D087)
             return
         if kind != "CommandExecution" or events[0].tool_action != SHELL:
             return
@@ -632,7 +653,11 @@ class _Parse:
         if events and (payload.get("success") is False
                        or payload.get("status") in ("failed", "declined")):
             for event in events:
-                event.is_error = True
+                event.is_error, event.status = True, "error"
+        elif events and payload.get("success") is True:
+            for event in events:
+                if not event.is_error:
+                    event.status = "completed"  # Codex's own success record (D087)
 
     # records
 

@@ -36,7 +36,24 @@ FILE_ACTIONS = (WRITE, EDIT, MULTI_EDIT, NOTEBOOK_EDIT)
 
 @dataclass
 class Event:
-    """One thing that happened in the session, in transcript order."""
+    """One thing that happened in the session, in transcript order.
+
+    The evidence contract every reader keeps (D087; verify.evidence_of_success
+    reads it, tests/test_reader_conformance.py holds each reader to it):
+    - result_seen: False when the call is made, True only when its result is in
+      the log. A reader never leaves it None (None means a hand-built event).
+    - exit_code: only from a structured field of the agent's log (a JSON exit
+      code, or a header or trailer the agent writes in a fixed place that the
+      command's own output cannot supply). A code read from printed text never
+      makes a run a success: text may only add a failure. No code: None, never
+      a made-up 0.
+    - status: the agent's own word for how the call ended. Success is only
+      "completed" or "success" from the agent's own record; the absence of a
+      failure flag is not a success. An outcome the log does not show is
+      "unknown"; a call that was skipped, declined or cancelled says so (with
+      is_error for a write or edit).
+    - rewound: True for a call a rewind left behind; it is never evidence.
+    """
 
     kind: EventKind
     index: int  # position in the session event stream

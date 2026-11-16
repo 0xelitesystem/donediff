@@ -148,10 +148,16 @@ def epoch(timestamp: str) -> float | None:
 
 
 def exit_code_of(event: Event) -> None:
-    """Set exit_code from the output text, as Claude Code writes it."""
+    """Set exit_code from the result, as Claude Code writes it.
+
+    The structured record is the tool_result's is_error flag: false means
+    the command exited 0. "Exit code N" in the text only ever adds a failure
+    code; a 0 printed in the text of a failed result is never taken (D087:
+    an exit code claimed only by printed text is no success)."""
     match = _EXIT_CODE_RE.search(event.output[:500])
-    if match:
-        event.exit_code = int(match.group(1))
+    code = int(match.group(1)) if match else None
+    if code:
+        event.exit_code = code
     elif not event.is_error:
         event.exit_code = 0
 

@@ -91,6 +91,29 @@ def _inconclusive(event: Event) -> str | None:
     return f"exit code hidden by `{how}` and output does not show the result"
 
 
+def _no_result(run: Event) -> str:
+    """The log ends (or moves on) before this run's result: no proof either way."""
+    return f"no result for this run in the log: `{_short(run.command)}`"
+
+
+def _no_proof(run: Event) -> str | None:
+    """Why a run that did not fail is still no proof that it passed, else None:
+    its exit code is hidden, the log has a status only, or it has no explicit
+    success record (evidence_of_success)."""
+    reason = _inconclusive(run)
+    if reason:
+        return f"{reason}: `{_short(run.command)}`"
+    if run.exit_code is None and run.status:
+        # A reader with no exit code for this run (Codex, opencode tool parts)
+        # gives its status; a status alone is no proof of success. The wording
+        # says "status", never "exit code" (CEO rule, D087).
+        return (f"the log has a status only ({run.status}), no proof of success: "
+                f"`{_short(run.command)}`")
+    if not evidence_of_success(run)[0]:
+        return f"the run {_write_why(run)}: `{_short(run.command)}`"
+    return None
+
+
 def _masked_note(event: Event) -> str:
     """Note how the run's result was read when it was not a plain exit code."""
     how = _how_masked(event)
@@ -270,10 +293,8 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
         return _unverified(claim, ctx, _NO_RUN_REASON.get(
             kind, "no command that could back this claim was run before it"))
     run_key, run = last
-    if run.result_seen is False:
-        # The log ends (or moves on) before this run's result: no proof either way.
-        return _found(claim, ctx, Verdict.UNVERIFIED,
-                      f"no result for this run in the log: `{_short(run.command)}`", run)
+    if evidence_of_success(run)[1] == NO_RESULT:
+        return _found(claim, ctx, Verdict.UNVERIFIED, _no_result(run), run)
     if _command_failed(run):
         if run.is_error or (run.exit_code or 0) != 0:
             reason = (f"exit {run.exit_code}" if run.exit_code is not None
@@ -285,17 +306,9 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
         return _found(claim, ctx, Verdict.CONTRADICTED,
                       f"most recent relevant run failed ({reason}): "
                       f"`{_short(run.command)}`", run)
-    reason = _inconclusive(run)
-    if reason:
-        return _found(claim, ctx, Verdict.UNVERIFIED,
-                      f"{reason}: `{_short(run.command)}`", run)
-    if run.exit_code is None and run.status:
-        # A reader with no exit code for this run (Codex, opencode tool parts)
-        # gives its status; a status alone is no proof of success. The wording
-        # says "status", never "exit code" (CEO rule, D087).
-        return _found(claim, ctx, Verdict.UNVERIFIED,
-                      f"the log has a status only ({run.status}), no proof of success: "
-                      f"`{_short(run.command)}`", run)
+    doubt = _no_proof(run)
+    if doubt:
+        return _found(claim, ctx, Verdict.UNVERIFIED, doubt, run)
     if kind in CHECK_TYPES:
         # Only edits inside the folder the check ran in make it stale: a
         # parallel agent working on another repository does not.
@@ -355,39 +368,92 @@ def _not_checked(skipped: set[str]) -> str:
     return "disk not checked (" + "; ".join(sorted(skipped)) + ")"
 
 
-# How a reader marks a write or edit that did not land (SEC-208): Gemini and
-# Qwen say cancelled or error, Codex failed or declined, OpenCode error.
-_FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejected", "declined"})
+# -- the one evidence rule (D087) ---------------------------------------------
+#
+# Success comes ONLY from an explicit success record. SEC-197, 208, 209, 211,
+# 212, 213 and 214 were one bug class, "something that did not succeed reads
+# as success", fixed per reader; every evidence decision below now goes
+# through `evidence_of_success`, and tests/test_reader_conformance.py holds
+# every registered reader to it.
+
+# How a reader marks a call that ended badly or never ran (SEC-208, SEC-214):
+# Gemini and Qwen say cancelled or error, Codex failed or declined, OpenCode
+# error, Goose declined (a chat-mode skip) or timeout.
+_FAILED_STATUS = frozenset({"cancelled", "canceled", "error", "failed", "rejected",
+                            "declined", "skipped", "timeout"})
 # A result the log holds but that does not say whether the call worked: Codex
-# code mode "outcome unknown", Cline "unknown" (SEC-212, is_error False).
-_UNKNOWN_STATUS = frozenset({"outcome unknown", "unknown"})
+# code mode "outcome unknown", Cline "unknown" (SEC-212, is_error False),
+# Codex "not recorded" (a shell result with no exit code and no success flag).
+_UNKNOWN_STATUS = frozenset({"outcome unknown", "unknown", "not recorded"})
 # A Codex code-mode script that failed or was stopped: a command nested in it
 # keeps is_error False (a test claim stays "status only"), but it is no
 # evidence that a file it would write was written (SEC-213).
 _SCRIPT_ENDED = frozenset({"script failed", "script terminated"})
-_NO_EVIDENCE_STATUS = _FAILED_STATUS | _UNKNOWN_STATUS | _SCRIPT_ENDED
+# Left behind by a rewind (SEC-210), or a pass logged before rows Goose
+# deleted (goose._REWOUND, SEC-215 class).
+_REWOUND_STATUS = frozenset({"rewound", "completed, later log rows were deleted"})
+# Still waiting: Gemini and OpenCode words for a call with no result yet, and
+# a run that went on in the background (SEC-208).
+_WAITING_STATUS = frozenset({"running", "pending", "streaming", "validating", "scheduled",
+                             "executing", "awaiting_approval"})
+NO_EVIDENCE_STATUS = (_FAILED_STATUS | _UNKNOWN_STATUS | _SCRIPT_ENDED
+                      | _REWOUND_STATUS | _WAITING_STATUS)
+# The words a reader writes when the agent's own record says the call worked.
+SUCCESS_STATUS = frozenset({"completed", "success"})
+
+# Why a call is no evidence of success (the second value of evidence_of_success).
+NO_RESULT, REWOUND, FAILED, UNKNOWN, WAITING, NO_RECORD = (
+    "no result", "rewound", "failed", "unknown", "waiting", "no success record")
 
 
-def _write_failed(event: Event) -> bool:
-    """A write or edit the log does not show succeeding: it failed, its
-    outcome is unknown (SEC-212, SEC-213), a rewind left it behind (SEC-210), or no
-    result was recorded (awaiting approval, still running, CLI stopped:
-    SEC-208). It stays an edit for staleness (code may have changed: errs
-    safe), but is no evidence that the file was written. result_seen None (a
-    reader that does not track results) counts."""
+def evidence_of_success(event: Event) -> tuple[bool, str]:
+    """The one evidence rule: (True, "") only when the log holds an explicit
+    success record for this call, else (False, why).
+
+    Success needs all of: the result was seen (result_seen not False); the
+    call was not rewound; its status is not in NO_EVIDENCE_STATUS; it is not
+    an error; and success is recorded, as an exit code of 0 (which a reader
+    sets only from a structured field, see models.Event) or a status in
+    SUCCESS_STATUS. Missing result, skipped, declined, cancelled, unknown,
+    status-only failure words, an exit code claimed only by printed text and
+    rewound all mean no evidence. A run whose exit code is missing still needs
+    it for a check claim ("status only", in _verify_command_claim).
+
+    A hand-built event (result_seen None, no reader) is taken as given: no
+    error and no exit code read as exit 0, the shape tests write by hand.
+    """
     status = (event.status or "").lower()
-    return (event.is_error or event.rewound or event.result_seen is False
-            or status in _NO_EVIDENCE_STATUS)
+    if status in _UNKNOWN_STATUS:
+        return False, UNKNOWN
+    if (event.is_error or status in _FAILED_STATUS | _SCRIPT_ENDED
+            or event.exit_code not in (None, 0)):
+        return False, FAILED
+    if event.rewound or status in _REWOUND_STATUS:
+        return False, REWOUND
+    if event.result_seen is False:
+        return False, NO_RESULT
+    if status in _WAITING_STATUS:
+        return False, WAITING
+    if event.exit_code == 0 or status in SUCCESS_STATUS:
+        return True, ""
+    if event.result_seen is None and not status:
+        return True, ""  # hand-built: no reader, nothing to doubt
+    return False, NO_RECORD
 
 
 def _write_why(event: Event) -> str:
-    """Why `_write_failed` is true, as the end of a sentence."""
-    if (event.status or "").lower() in _UNKNOWN_STATUS:
+    """Why `evidence_of_success` is False, as the end of a sentence."""
+    why = evidence_of_success(event)[1]
+    if why == UNKNOWN:
         return "has an unknown outcome: the log does not show whether it ran"
-    if event.is_error or (event.status or "").lower() in _FAILED_STATUS | _SCRIPT_ENDED:
+    if why == FAILED:
         return f"did not succeed ({event.status or 'error'})"
-    if event.rewound:
+    if why == REWOUND:
         return "was rewound"
+    if why == WAITING:
+        return f"did not finish ({event.status})"
+    if why == NO_RECORD:
+        return "has no success record in the log"
     return "did not finish: no result was recorded"
 
 
@@ -431,7 +497,7 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
     if not writes:
         return _unverified(claim, ctx,
                            f"no Write/Edit call for `{name}` appears before the claim")
-    done = [w for w in writes if not _write_failed(w)]
+    done = [w for w in writes if evidence_of_success(w)[0]]
     if not done:
         return _failed_write(claim, ctx, writes, name)
     writes = done
@@ -462,13 +528,14 @@ def _verify_task_done(timeline: Timeline, claim: Claim, ctx: _Context) -> Findin
         runs = timeline.runs_before(claim_type, ctx.key, ctx.restrict, after=edit_key)
         if runs:
             run = runs[-1]  # the first check after the final edit
+            if evidence_of_success(run)[1] == NO_RESULT:
+                return _found(claim, ctx, Verdict.UNVERIFIED, _no_result(run), run)
             if _command_failed(run):
                 return _found(claim, ctx, Verdict.CONTRADICTED,
                               f"check after final edit failed: `{_short(run.command)}`", run)
-            reason = _inconclusive(run)
-            if reason:
-                return _found(claim, ctx, Verdict.UNVERIFIED,
-                              f"{reason}: `{_short(run.command)}`", run)
+            doubt = _no_proof(run)
+            if doubt:
+                return _found(claim, ctx, Verdict.UNVERIFIED, doubt, run)
             return _rewound_cap(timeline, claim_type, edit_key, ctx, claim, _found(
                 claim, ctx, Verdict.VERIFIED,
                 f"verified after final edit by `{_short(run.command)}`", run))
@@ -506,7 +573,7 @@ _PRINTED_ID = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
 def _verify_commit_id(timeline: Timeline, claim: Claim, ctx: _Context) -> Finding:
     """A commit id named in a claim, from the transcript: a commit command printed it."""
     for run in timeline.runs_before(ClaimType.COMMIT_MADE, ctx.key, None):
-        if _command_failed(run):
+        if _command_failed(run) or not evidence_of_success(run)[0]:
             continue
         if any(_ids_match(claim.detail, m) for m in _PRINTED_ID.findall(run.output[:4000])):
             return _found(claim, ctx, Verdict.VERIFIED,
@@ -547,7 +614,7 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
         if event.kind is EventKind.TOOL_CALL and event.command and not _command_failed(event):
             for path in _SHELL_WRITE.findall(event.command):
                 if _same_file(path, event.cwd or session.cwd, target, session.cwd):
-                    if _write_failed(event):
+                    if not evidence_of_success(event)[0]:
                         unfinished.append(event)
                     else:
                         shell_paths.append((event, path))
@@ -558,7 +625,7 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
                           f"`{_short(last.command)}` writes `{target}`, but the run"
                           f" {_write_why(last)}", last)
         return _unverified(claim, ctx, f"no write to `{target}` appears before the claim")
-    done = [w for w in writes if not _write_failed(w)]
+    done = [w for w in writes if evidence_of_success(w)[0]]
     if writes and not done and not shell_paths:
         return _failed_write(claim, ctx, writes, target)
     writes = done
