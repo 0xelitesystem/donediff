@@ -54,8 +54,10 @@ logged later than its first message, mark it, and then no pass in it counts.
 
 The database is opened read-only (URI mode=ro, query_only; immutable for a
 WAL file with no side files, SEC-204) for one read and closed; nothing is
-written. A row whose JSON does not parse, an over-size row or a block type
-this reader does not know is skipped and counted in Session.unrecognised.
+written. A row whose JSON does not parse, an over-size row or metadata, or a
+block type this reader does not know is skipped and counted in
+Session.unrecognised. Rows are read one at a time under a total row and size
+bound; rows past it are counted too, and no pass logged before them is proof.
 """
 
 from __future__ import annotations
@@ -81,6 +83,8 @@ _MAGIC = b"SQLite format 3\x00"
 _TIMEOUT = 1.0
 _MAX_ROW = 16 * 1024 * 1024  # bytes of content_json read for one message
 _MAX_ROWS = 500_000  # messages read for one session
+_MAX_META = 64 * 1024  # characters of metadata_json read for one message (SEC-217)
+_MAX_TOTAL = 128 * 1024 * 1024  # content + metadata read for one session (SEC-217)
 _MS = 10_000_000_000  # created_timestamp above this is milliseconds (L36, L860)
 _DEVELOPER = "developer"
 _KNOWN_BLOCKS = frozenset({"text", "image", "document", "toolRequest", "toolResponse",
@@ -617,42 +621,71 @@ def parse_session(path: SessionPath) -> Session:
                 raise FileNotFoundError(f"no Goose session {sid!r} in {db}")
             state = _Parse(path.label(), sid, clean_path(row[0]))
             state.session.version = f"schema {version}"
-            rows = conn.execute(
-                'SELECT id, role, created_timestamp, metadata_json, '
-                'CASE WHEN LENGTH(content_json) > ? THEN NULL ELSE content_json END '
-                'FROM "messages" WHERE session_id = ? ORDER BY created_timestamp, id LIMIT ?',
-                (_MAX_ROW, sid, _MAX_ROWS)).fetchall()
-            ids = sorted(r[0] for r in rows if isinstance(r[0], int))
+            stored = conn.execute('SELECT COUNT(*) FROM "messages" WHERE session_id = ?',
+                                  (sid,)).fetchone()[0]
+            ids, read, budget, cut = [], 0, _MAX_TOTAL, stored > _MAX_ROWS
+            # One row in memory at a time (SEC-217): content and metadata are
+            # capped per row, and all rows together by _MAX_TOTAL.
+            for rowid, role, created, metadata, meta_over, raw in conn.execute(
+                    'SELECT id, role, created_timestamp, '
+                    'CASE WHEN LENGTH(metadata_json) > ? THEN NULL ELSE metadata_json END, '
+                    'COALESCE(LENGTH(metadata_json) > ?, 0), '
+                    'CASE WHEN LENGTH(content_json) > ? THEN NULL ELSE content_json END '
+                    'FROM "messages" WHERE session_id = ? ORDER BY created_timestamp, id LIMIT ?',
+                    (_MAX_META, _MAX_META, _MAX_ROW, sid, _MAX_ROWS)):
+                size = _size(raw) + _size(metadata)
+                if size > budget:
+                    cut = True
+                    break
+                budget -= size
+                read += 1
+                if isinstance(rowid, int):
+                    ids.append(rowid)
+                if meta_over:
+                    state.session.unrecognised += 1  # unread metadata hides nothing
+                _row(state, rowid, role, created, metadata, raw)
+            ids.sort()
             gap = _last_deleted_gap(conn, ids, sid)
     except sqlite3.Error as exc:
         raise UnreadableSession(_why(exc)) from None
-    for rowid, role, created, metadata, raw in rows:
-        state.row += 1
-        content = _json(raw)
-        if role not in ("user", "assistant") or not isinstance(content, list):
-            state.session.unrecognised += 1
-            continue
-        state.at(_seconds(created))
-        prompted = False
-        for block in content:
-            kind = block.get("type") if isinstance(block, dict) else None
-            if kind not in _KNOWN_BLOCKS:
-                state.session.unrecognised += 1
-                continue
-            if kind == "text":
-                text = _str(block.get("text"))
-                if role == "assistant":
-                    state.text(text)
-                elif not prompted and text.strip() and _visible_to_user(metadata):
-                    state.prompt()
-                    prompted = True
-            elif kind == "toolRequest" and role == "assistant":
-                state.request(block, rowid)
-            elif kind == "toolResponse":
-                state.response(block)
+    if cut:
+        # Rows past the bound are not read: counted, and since one of them may
+        # hold a later edit or failure, no pass before them is proof.
+        state.session.unrecognised += max(stored - read, 1)
+        gap = ids[-1] if ids else gap
     if gap is not None:
         state.demote_before(gap)
     return state.session
+
+
+def _size(value) -> int:
+    return len(value) if isinstance(value, (str, bytes)) else 0
+
+
+def _row(state: _Parse, rowid, role, created, metadata, raw) -> None:
+    state.row += 1
+    content = _json(raw)
+    if role not in ("user", "assistant") or not isinstance(content, list):
+        state.session.unrecognised += 1
+        return
+    state.at(_seconds(created))
+    prompted = False
+    for block in content:
+        kind = block.get("type") if isinstance(block, dict) else None
+        if kind not in _KNOWN_BLOCKS:
+            state.session.unrecognised += 1
+            continue
+        if kind == "text":
+            text = _str(block.get("text"))
+            if role == "assistant":
+                state.text(text)
+            elif not prompted and text.strip() and _visible_to_user(metadata):
+                state.prompt()
+                prompted = True
+        elif kind == "toolRequest" and role == "assistant":
+            state.request(block, rowid)
+        elif kind == "toolResponse":
+            state.response(block)
 
 
 class GooseReader:

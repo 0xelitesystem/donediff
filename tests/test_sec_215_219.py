@@ -116,3 +116,61 @@ def test_relative_home_is_refused_not_resolved(tmp_path, monkeypatch):
         _env(monkeypatch, "relhome", **kw)
         assert gs.data_dir() is None and gs.database_path() is None, platform
         assert gs.GOOSE.discover() == []
+
+
+# -- SEC-217: metadata_json capped, the whole read bounded ---------------------------
+
+def test_oversize_metadata_is_counted_and_hides_nothing(tmp_path):
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    row = b.user("Please do the task.")
+    big = '{"userVisible": false, "pad": "' + "x" * (70 * 1024) + '"}'
+    b.conn.execute("UPDATE messages SET metadata_json = ? WHERE id = ?", (big, row))
+    b.say("Done.")
+    session = gs.GOOSE.parse(gs.GOOSE.resolve(b.close()))
+    assert session.unrecognised == 1
+    assert session.prompt_starts == [0]
+
+
+def test_rows_past_the_size_bound_are_counted_and_prove_no_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(gs, "_MAX_TOTAL", 3000, raising=False)
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    b.user("Please do the task.")
+    b.shell("pytest -q", "12 passed", 0)
+    b.say("x" * 4000)  # past the bound: it and everything after it is not read
+    b.shell("pytest -q", "1 failed", 1)
+    b.say("All tests pass.")
+    session = gs.GOOSE.parse(gs.GOOSE.resolve(b.close()))
+    runs = [e for e in session.tool_calls() if e.tool_action == SHELL]
+    assert len(runs) == 1 and runs[0].exit_code is None and runs[0].status == gs._REWOUND
+    assert session.unrecognised == 4
+
+
+def test_rows_past_the_row_bound_are_counted_and_prove_no_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(gs, "_MAX_ROWS", 3)
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    b.user("Please do the task.")
+    b.shell("pytest -q", "12 passed", 0)
+    b.shell("pytest -q", "1 failed", 1)
+    session = gs.GOOSE.parse(gs.GOOSE.resolve(b.close()))
+    runs = [e for e in session.tool_calls() if e.tool_action == SHELL]
+    assert len(runs) == 1 and runs[0].exit_code is None
+    assert session.unrecognised == 2
+
+
+def test_big_metadata_rows_stay_out_of_memory(tmp_path):
+    import tracemalloc
+
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    for _ in range(3):
+        row = b.user("Please do the task.")
+        b.conn.execute("UPDATE messages SET metadata_json = ? WHERE id = ?",
+                       ("{" + " " * (8 * 1024 * 1024) + "}", row))
+    target = gs.GOOSE.resolve(b.close())
+    tracemalloc.start()
+    try:
+        session = gs.GOOSE.parse(target)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert session.unrecognised == 3
+    assert peak < 4 * 1024 * 1024, peak
