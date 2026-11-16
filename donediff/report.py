@@ -186,6 +186,7 @@ def render_json(result: AuditResult) -> str:
             "main_only": result.session.main_only,
             "subagent_transcripts": scan.subagents,
             "workflow_agent_transcripts": scan.workflow_agents,
+            "unrecognised_records": result.session.unrecognised,
             "bytes": scan.bytes,
             "seconds": round(scan.seconds, 3),
         },

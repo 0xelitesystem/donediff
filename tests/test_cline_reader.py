@@ -16,7 +16,7 @@ from donediff.readers import CLINE, CODEX, GEMINI, OPENCODE, QWEN, READERS, sele
 from donediff.readers import cline as cline_mod
 from donediff.readers.base import UnreadableSession
 from donediff.readers.claude_code import CLAUDE_CODE
-from donediff.report import render_terminal
+from donediff.report import render_json, render_terminal
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "examples" / "demo-session.jsonl"
@@ -505,8 +505,9 @@ def test_unknown_messages_and_blocks_are_counted(tmp_path):
     session = CLINE.parse(path)
     assert [e.text for e in session.text_events()] == ["Still read."]
     assert session.unrecognised == 4
-    report = render_terminal(audit(path), color=False)
-    assert "4 unrecognised record(s) skipped" in report
+    result = audit(path)
+    assert "4 unrecognised record(s) skipped" in render_terminal(result, color=False)
+    assert json.loads(render_json(result))["scope"]["unrecognised_records"] == 4
 
 
 def test_tagged_user_text_and_tool_results_are_not_prompts(tmp_path):
