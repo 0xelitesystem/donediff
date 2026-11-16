@@ -57,7 +57,6 @@ this reader does not know is skipped and counted in Session.unrecognised.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sqlite3
@@ -68,6 +67,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
+from ..parser import loads
 from ..shell import is_remote_path
 from .base import UnreadableSession
 from .codex import clean_path
@@ -311,8 +311,8 @@ def _json(raw):
     if not isinstance(raw, str):
         return None
     try:
-        return json.loads(raw)
-    except (ValueError, RecursionError):
+        return loads(raw)  # too deep: ValueError (SEC-207)
+    except ValueError:
         return None
 
 

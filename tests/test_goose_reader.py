@@ -412,3 +412,100 @@ def test_session_path_stats_as_the_session(tmp_path):
     assert 0 < path.stat().st_size < Path(db).stat().st_size
     assert path.stat().st_mtime == pytest.approx(mk.T0 + 8)
     assert audit(db).session.path.endswith("#20260610_1")
+
+
+# -- SEC-207 / SEC-208, as tests/test_sec_207_208.py checks them for the other readers --
+
+BOMB = "[" * 200_000 + "]" * 200_000
+CLAIM = "I created `limiter.py` with the new limiter."
+DOCUMENTED_EXITS = (0, 1, 2, 3)
+
+
+def run_cli(target, agent, capsys, disk=False):
+    argv = ["audit", str(target), "--agent", agent, "--no-color"]
+    if not disk:
+        argv.append("--no-disk-check")
+    code = cli.main(argv)  # a crash raises here and fails the test
+    out, err = capsys.readouterr()
+    assert code in DOCUMENTED_EXITS
+    assert "Traceback" not in out + err
+    return code, out
+
+
+def test_bomb_row_is_counted_not_a_crash(tmp_path, capsys):
+    def build(b):
+        b.say("Before.")
+        b.raw("assistant", BOMB)
+        b.say("After.")
+    db = one_session(tmp_path, build)
+    session = GOOSE.parse(GOOSE.resolve(db))
+    assert session.unrecognised == 1
+    assert [e.text for e in session.text_events()] == ["Before.", "After."]
+    _, out = run_cli(db, "goose", capsys)
+    assert "1 unrecognised record(s) skipped" in out
+    run_cli(db, "auto", capsys)
+
+
+def test_bomb_metadata_is_not_a_crash(tmp_path, capsys):
+    b = mk.Builder(tmp_path / "sessions.db").session("20260610_7")
+    row = b.user("Fix it.")
+    b.conn.execute("UPDATE messages SET metadata_json = ? WHERE id = ?", (BOMB, row))
+    b.say("Done.")
+    db = b.close()
+    session = GOOSE.parse(GOOSE.resolve(db))
+    assert session.prompt_starts == [0]  # unreadable metadata hides nothing
+    run_cli(db, "goose", capsys)
+
+
+def _file_finding(result):
+    found = [f for f in result.findings
+             if f.claim.type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED)]
+    assert len(found) == 1, [f.claim for f in result.findings]
+    return found[0]
+
+
+WRITE_TOOLS = [
+    ("write", lambda t: ("developer__write", {"path": t, "content": "x = 1\n"})),
+    ("text_editor", lambda t: ("developer__text_editor",
+                               {"command": "write", "path": t, "file_text": "x = 1\n"})),
+]
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("name,tool", WRITE_TOOLS, ids=[w[0] for w in WRITE_TOOLS])
+def test_write_with_no_result_does_not_verify_created(tmp_path, name, tool, disk):
+    db = one_session(tmp_path, lambda b: (
+        b.tool(*tool((tmp_path / "limiter.py").as_posix()), respond=False), b.say(CLAIM)))
+    write = GOOSE.parse(GOOSE.resolve(db)).tool_calls()[0]
+    assert write.tool_action == WRITE and write.result_seen is False
+    finding = _file_finding(cli.run_audit(db, check_disk=disk, agent="goose"))
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "no result was recorded" in finding.evidence
+
+
+FAILURES = [
+    ("error-result", {"error": "extension crashed"}),
+    ("is-error", {"value": {"content": [{"type": "text", "text": "denied"}], "isError": True}}),
+]
+
+
+@pytest.mark.parametrize("disk", (False, True), ids=("no-disk-check", "disk-check"))
+@pytest.mark.parametrize("failure,kw", FAILURES, ids=[f[0] for f in FAILURES])
+@pytest.mark.parametrize("name,tool", WRITE_TOOLS, ids=[w[0] for w in WRITE_TOOLS])
+def test_failed_write_does_not_verify_created(tmp_path, name, tool, failure, kw, disk):
+    db = one_session(tmp_path, lambda b: (
+        b.tool(*tool((tmp_path / "limiter.py").as_posix()), **kw), b.say(CLAIM)))
+    write = GOOSE.parse(GOOSE.resolve(db)).tool_calls()[0]
+    assert write.result_seen and write.is_error and write.status == "error"
+    finding = _file_finding(cli.run_audit(db, check_disk=disk, agent="goose"))
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "did not succeed (error)" in finding.evidence
+
+
+@pytest.mark.parametrize("name,tool", WRITE_TOOLS, ids=[w[0] for w in WRITE_TOOLS])
+def test_no_result_then_successful_write_verifies(tmp_path, name, tool):
+    target = (tmp_path / "limiter.py").as_posix()
+    db = one_session(tmp_path, lambda b: (
+        b.tool(*tool(target), respond=False), b.tool(*tool(target)), b.say(CLAIM)))
+    finding = _file_finding(cli.run_audit(db, check_disk=False, agent="goose"))
+    assert finding.verdict is Verdict.VERIFIED
