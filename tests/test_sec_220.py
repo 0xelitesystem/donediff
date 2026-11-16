@@ -75,3 +75,32 @@ def test_full_paths_keeps_them(tmp_path, capsys):
 def test_the_terminal_report_is_unchanged(tmp_path, capsys):
     assert main(["audit", _session(tmp_path), "--no-disk-check", "--no-color"]) == 0
     assert WIN_CWD in capsys.readouterr().out
+
+
+CLAIMED = "/home/alice/proj/app.py"
+
+
+def _claim_session(tmp_path) -> str:
+    records = [assistant_tool("w1", "Write", {"file_path": CLAIMED, "content": "x = 1\n"}),
+               tool_result("w1", "File created successfully at: " + CLAIMED),
+               assistant_text("I created `" + CLAIMED + "` with the new code.")]
+    return write_jsonl(tmp_path / "c.jsonl", records)
+
+
+def test_claim_text_shows_home_as_tilde_and_full_paths_keeps_it(tmp_path, capsys):
+    # SEC-220 extension: quote, sentence and detail are shown with ~ at display
+    # time only; the engine still matched the real path (same verdict both ways).
+    target = _claim_session(tmp_path)
+    md = tmp_path / "r.md"
+    main(["audit", target, "--no-disk-check", "--json", "--md", str(md)])
+    claims = json.loads(capsys.readouterr().out)["claims"]
+    hit = [c for c in claims if "app.py" in c["quote"] + c["detail"]]
+    assert hit, claims
+    for claim in hit:
+        for key in ("quote", "sentence", "detail"):
+            assert "alice" not in claim[key], (key, claim[key])
+    assert "alice" not in md.read_text(encoding="utf-8")
+    main(["audit", target, "--no-disk-check", "--json", "--full-paths"])
+    raw = json.loads(capsys.readouterr().out)["claims"]
+    assert any("/home/alice/" in c["quote"] + c["sentence"] + c["detail"] for c in raw)
+    assert [c["verdict"] for c in raw] == [c["verdict"] for c in claims]

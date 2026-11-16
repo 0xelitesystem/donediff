@@ -194,9 +194,9 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
 def _finding_dict(finding: Finding, full_paths: bool = False) -> dict:
     return {
         "type": finding.claim.type.value,
-        "quote": finding.claim.quote,
-        "sentence": finding.claim.sentence or finding.claim.quote,
-        "detail": finding.claim.detail,
+        "quote": _shown(finding.claim.quote, full_paths),
+        "sentence": _shown(finding.claim.sentence or finding.claim.quote, full_paths),
+        "detail": _shown(finding.claim.detail, full_paths),
         "verdict": finding.verdict.value,
         "evidence": _shown(finding.evidence, full_paths),
         "claim_event": finding.claim.event_index,
@@ -255,7 +255,7 @@ def render_markdown(result: AuditResult, full_paths: bool = False) -> str:
     ]
     for finding in result.findings:
         _, symbol, label = _VERDICT_STYLE[finding.verdict]
-        quote = _safe(finding.claim.quote).replace("|", "\\|")
+        quote = _safe(_shown(finding.claim.quote, full_paths)).replace("|", "\\|")
         evidence = _safe(_shown(finding.evidence, full_paths)).replace("|", "\\|")
         lines.append(f"| {symbol} {label} | {quote} | {evidence} |")
     if result.gaming_signals:
