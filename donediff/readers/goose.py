@@ -87,6 +87,10 @@ _HIDDEN_TYPES = frozenset({"sub_agent", "hidden"})  # not offered as "latest" or
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]")
 _ID = re.compile(r"^[0-9A-Za-z_.-]{1,128}$")
 _REWOUND = "completed, later log rows were deleted"
+# What Goose answers, as a success, for a tool call it skipped in chat mode:
+# the tool never ran (block/goose d8de0e7 crates/goose/src/agents/
+# state_machine/ops_remaining_tool_calls.rs:87-92, CHAT_MODE_TOOL_SKIPPED_RESPONSE).
+_SKIPPED = "Let the user know the tool call was skipped in goose chat mode"
 
 
 # -- where the database is ----------------------------------------------------
@@ -481,6 +485,15 @@ class _Parse:
             structured = value.get("structuredContent")
             structured = structured if isinstance(structured, dict) else None
         else:
+            return
+        if not failed and text.lstrip().startswith(_SKIPPED):
+            # Skipped in chat mode: never ran, so no evidence of anything (SEC-214).
+            # A write or edit is a failure; a command is status only (it did
+            # not fail either), with no exit code and no hints from the text.
+            for event in events:
+                event.result_seen, event.status = True, "declined"
+                event.is_error = event.tool_action != SHELL
+                event.output, event.exit_code = text, None
             return
         for event in events:
             if event.result_seen and not (is_error and not event.is_error):
