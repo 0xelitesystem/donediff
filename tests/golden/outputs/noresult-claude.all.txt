@@ -1,6 +1,6 @@
 
 [1m[36m  donediff[0m[2m, claims vs. reality[0m
-[2m  session noresult-cla · 4 events · /home/dev/golden[0m
+[2m  session noresult-claude · 4 events · /home/dev/golden[0m
 [2m  evidence from the main transcript; no sub-agent or workflow transcripts found[0m
 
   [1mDONEDIFF SCORE[0m  [1m[33m62/100 (D)[0m

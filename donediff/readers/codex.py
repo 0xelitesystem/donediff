@@ -727,7 +727,7 @@ class _Parse:
         git = payload.get("git")
         branch = git.get("branch") if isinstance(git, dict) else None
         session.git_branch = branch[:256] if isinstance(branch, str) else ""
-        session.slug = session.session_id[:12]
+        session.slug = session.session_id
         self.cwd = self.cwd or session.cwd
 
     def response(self, payload: dict) -> None:

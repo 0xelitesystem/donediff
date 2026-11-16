@@ -139,7 +139,7 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
     lines: list[str] = []
     out = lines.append
 
-    title = _safe(session.slug or Path(session.path).stem[:12])
+    title = _safe(session.slug or Path(session.path).stem)
     out("")
     out(_paint("  donediff", _BOLD, _CYAN, enabled=color)
         + _paint(", claims vs. reality", _DIM, enabled=color))

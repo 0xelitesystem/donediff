@@ -380,7 +380,7 @@ class _Parse:
     """One read of one session, building the Session."""
 
     def __init__(self, label: str, sid: str):
-        self.session = Session(path=label, session_id=sid, slug=sid[:12])
+        self.session = Session(path=label, session_id=sid, slug=sid)
         self.index = 0
         self.row = 0
         self.clock = float("-inf")

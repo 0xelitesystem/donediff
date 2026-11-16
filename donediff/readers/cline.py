@@ -496,7 +496,7 @@ def parse_session(path: str | Path) -> Session:
         raise UnreadableSession(f"not a Cline session file (version 1): {path.name}")
     session = Session(path=str(path))
     session.session_id = doc["sessionId"][:128]
-    session.slug = session.session_id[:12]
+    session.slug = session.session_id
     session.cwd = project_of(path, doc)
     if isinstance(doc.get("updated_at"), str):
         session.last_timestamp = doc["updated_at"][:64]

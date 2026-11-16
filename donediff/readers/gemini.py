@@ -511,7 +511,9 @@ def parse_session(path: str | Path) -> Session:
                 history.add(record)
     meta = history.meta
     session.session_id = _str(meta.get("sessionId"))[:128]
-    session.slug = session.session_id[:12]
+    # the label is the id `audit` takes for this file (QA-028 g): the file name's
+    # id, whole, since the full sessionId inside the file is not a target
+    session.slug = short_id(Path(path).name) or session.session_id
     session.cwd = project_root(path)
     build = _Build(session, session.cwd)
     build.at(meta.get("startTime"))

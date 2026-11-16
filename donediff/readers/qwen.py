@@ -430,7 +430,7 @@ def parse_session(path: str | Path) -> Session:
         if isinstance(record.get("sessionId"), str):
             session.session_id = record["sessionId"][:128]
             break
-    session.slug = session.session_id[:12]
+    session.slug = session.session_id
     left = _rewound(records, chain)
     build = _Build(session, _results(chain))
     for uuid, behind in left.items():  # results of rewound calls, never over the chain's

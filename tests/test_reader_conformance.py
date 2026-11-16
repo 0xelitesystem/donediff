@@ -233,3 +233,25 @@ def test_session_ids_resolve_through_one_rule(tmp_path, monkeypatch, capsys, nam
     ids = short_ids(sessions, sessions, reader.session_keys)
     assert len(set(ids)) == len(ids)
     assert all(reader.resolve(i) is s for i, s in zip(ids, sessions))
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_printed_session_label_is_a_full_id(tmp_path, name):
+    """QA-028 g: the session label in a report is a whole id that the reader
+    resolves exactly (pick_session), never an id cut mid-way."""
+    import re
+
+    from donediff.readers.base import pick_session
+    from donediff.report import render_terminal
+    module = BUILDERS[name]
+    project = tmp_path / "project"
+    project.mkdir()
+    target = module.build(project, SUCCESS, FILE)
+    result = cli.run_audit(str(target), check_disk=False, agent=module.AGENT)
+    text = render_terminal(result, color=False)
+    label = re.search(r"session (\S+) \u00b7", text).group(1)
+    reader = next(r for r in READERS if r.name == name)
+    target = reader.resolve(str(target))
+    keys = tuple(reader.session_keys(target))
+    assert label in keys, (label, keys)
+    assert pick_session([target], label, reader.session_keys, "here") is target
