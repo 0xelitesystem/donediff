@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from .models import Claim, ClaimType, Event, EventKind, Session
+from .models import Claim, ClaimType, EventKind, Session
 
 # Sentences containing these are aspirational or negative, not assertions.
 _DISQUALIFIERS = re.compile(

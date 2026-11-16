@@ -13,6 +13,16 @@ from typing import Protocol
 from ..models import Session
 
 
+def _str(value) -> str:
+    """The value when it is a string, else "" (a log field of the wrong type)."""
+    return value if isinstance(value, str) else ""
+
+
+def _int(value) -> int | None:
+    """The value when it is an int and not a bool, else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 class UnreadableSession(OSError):
     """The session file exists but this Python cannot read it (the message says why)."""
 

@@ -58,7 +58,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
-from .base import UnreadableSession
+from .base import UnreadableSession, _str
 from .codex import _UNSAFE, _join, _lines, clean_path
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
@@ -480,10 +480,6 @@ class _Build:
             event.status = status  # success, error or cancelled, with no exit code
             event.is_error = status == "error"
         self._hints(event)
-
-
-def _str(value) -> str:
-    return value if isinstance(value, str) else ""
 
 
 def parse_session(path: str | Path) -> Session:

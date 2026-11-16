@@ -56,8 +56,9 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession
-from .codex import clean_path, parse_patch
+from .base import UnreadableSession, _str
+from .base import _int as _exit
+from .codex import _join, clean_path, parse_patch
 
 _MAGIC = b"SQLite format 3\x00"
 _TIMEOUT = 1.0  # seconds to wait for a writer's lock before giving up
@@ -344,14 +345,6 @@ def _iso(ms) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
-def _str(value) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _exit(value) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _content_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -372,14 +365,6 @@ def _error_text(error) -> str:
             if isinstance(value, dict) and isinstance(value.get("message"), str):
                 return value["message"]
     return ""
-
-
-def _join(base: str, workdir: str) -> str:
-    if not workdir:
-        return base
-    if workdir.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", workdir) or not base:
-        return workdir
-    return base.rstrip("/\\") + "/" + workdir
 
 
 # -- the reader ---------------------------------------------------------------

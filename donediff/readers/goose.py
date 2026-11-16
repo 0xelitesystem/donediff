@@ -74,7 +74,8 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession
+from .base import UnreadableSession, _str
+from .base import _int as _exit
 from .codex import clean_path
 from .opencode import COPY, connect_read_only, is_database
 
@@ -347,14 +348,6 @@ def _json(raw):
         return loads(raw)  # too deep: ValueError (SEC-207)
     except ValueError:
         return None
-
-
-def _str(value) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _exit(value) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _content_text(content) -> str:

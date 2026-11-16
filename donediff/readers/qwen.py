@@ -57,7 +57,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
-from .base import UnreadableSession
+from .base import UnreadableSession, _int, _str
 from .codex import _UNSAFE, _join, _lines, clean_path
 from .gemini import _entries, _is_plain_dir, result_text
 
@@ -156,14 +156,6 @@ def _parts(record: dict) -> list:
     message = record.get("message")
     parts = message.get("parts") if isinstance(message, dict) else None
     return parts if isinstance(parts, list) else []
-
-
-def _str(value) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _int(value) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def shell_display(display) -> tuple[bool, int | None, str]:

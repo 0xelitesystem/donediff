@@ -246,13 +246,6 @@ def normalize_stage(stage: str, _depth: int = 0) -> str:
     return " ".join([head] + rest)
 
 
-def stage_heads(command: str) -> list[str]:
-    """The normalised form of every stage of every statement."""
-    return [normalize_stage(stage)
-            for statement in split_statements(command)
-            for stage in statement.stages if stage]
-
-
 def program(stage: str) -> str:
     """The program name a stage starts, lowercased."""
     norm = normalize_stage(stage)

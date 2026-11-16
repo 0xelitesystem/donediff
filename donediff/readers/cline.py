@@ -75,7 +75,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession
+from .base import UnreadableSession, _str
 from .codex import _UNSAFE, argv_command, clean_path, parse_patch
 from .gemini import _entries, _is_plain_dir
 
@@ -192,10 +192,6 @@ def manifest(path: Path) -> dict:
 
 
 # -- what a message holds -----------------------------------------------------
-
-def _str(value) -> str:
-    return value if isinstance(value, str) else ""
-
 
 def _iso(ms) -> str:
     if not isinstance(ms, (int, float)) or isinstance(ms, bool):
