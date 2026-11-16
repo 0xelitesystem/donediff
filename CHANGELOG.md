@@ -47,6 +47,11 @@ donediff now reads more coding agents than Claude Code.
   - a Codex patch counts only when Codex recorded it as applied; otherwise
     its outcome is unknown;
   - a printed "exit code 0" on a failed Claude Code result is not taken.
+- A command the user declined, cancelled or the agent skipped never ran, so
+  it proves nothing either way: a "tests pass" claim after it is UNVERIFIED,
+  no longer CONTRADICTED. CONTRADICTED needs a real non-zero exit or failure
+  output. (Goose logs no record of a cancel, so a cancelled Goose command
+  still reads as the error it logged.)
 - Gaming signals on a rewound call end with "(rewound)".
 
 ### Fixed
@@ -91,8 +96,8 @@ donediff now reads more coding agents than Claude Code.
 - Every new reader opens agent logs read-only, starts no other program and
   makes no network call. Network and device paths are refused. The Codex,
   Gemini CLI, Qwen Code and Cline readers do not follow symlinks or Windows
-  junctions in the agents' folders, and the Goose reader does not open a
-  linked database.
+  junctions in the agents' folders, and the opencode and Goose readers do not
+  open a linked database or a database in a linked folder.
 
 ## 0.4.0
 

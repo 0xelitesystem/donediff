@@ -30,5 +30,8 @@ donediff = "donediff.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [".github"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
