@@ -422,7 +422,8 @@ def test_cli_list_and_audit_with_agent_codex(tmp_path, monkeypatch, capsys):
             folder=_day(home, "2026", "06", "10"))
     monkeypatch.setenv("CODEX_HOME", str(home))
     assert cli.main(["list", "--agent", "codex"]) == 0
-    line = capsys.readouterr().out.strip()
+    heading, line = capsys.readouterr().out.strip().splitlines()  # column headings first
+    assert heading.split() == ["ID", "MODIFIED", "SIZE", "PROJECT"]
     assert line.startswith("codexdem") and line.endswith("acme-api")
     assert cli.main(["audit", "latest", "--agent", "codex", "--json", "--no-disk-check"]) == 0
     data = json.loads(capsys.readouterr().out)

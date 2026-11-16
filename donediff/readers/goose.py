@@ -149,6 +149,15 @@ def database_path() -> Path | None:
     return None if is_remote_path(os.fspath(result)) else result
 
 
+def _home_form(path: Path) -> str:
+    """The path with the home folder shown as ~ (as every reader names its location)."""
+    try:
+        rest = Path(path).relative_to(Path(os.path.expanduser("~")))
+    except ValueError:
+        return os.fspath(path)
+    return "~/" + rest.as_posix()
+
+
 def _usable(db: Path) -> bool:
     return (not is_remote_path(os.fspath(db)) and not _is_link(db) and not _is_link(db.parent)
             and db.is_file() and is_database(db))
@@ -616,7 +625,7 @@ def parse_session(path: SessionPath) -> Session:
             version = _check_version(conn)
             row = conn.execute('SELECT working_dir FROM "sessions" WHERE id = ?', (sid,)).fetchone()
             if row is None:
-                raise FileNotFoundError(f"no Goose session {sid!r} in {db}")
+                raise FileNotFoundError(f'no Goose session "{sid}" in {db}')
             state = _Parse(path.label(), sid, clean_path(row[0]))
             state.session.version = f"schema {version}"
             stored = conn.execute('SELECT COUNT(*) FROM "messages" WHERE session_id = ?',
@@ -694,7 +703,7 @@ class GooseReader:
     @property
     def location(self) -> str:
         db = database_path()
-        return os.fspath(db) if db is not None else "the Goose sessions database"
+        return _home_form(db) if db is not None else "the Goose sessions database"
 
     def _list(self, db: Path, project_filter: str | None = None, strict: bool = False,
               hidden: bool = False) -> list[SessionPath]:

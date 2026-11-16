@@ -633,7 +633,7 @@ def parse_session(path: SessionPath) -> Session:
             row = conn.execute(f'SELECT directory, version FROM "{table}" WHERE id = ?',
                                (sid,)).fetchone()
             if row is None:
-                raise FileNotFoundError(f"no opencode session {sid!r} in {db}")
+                raise FileNotFoundError(f'no opencode session "{sid}" in {db}')
             state.session.cwd = clean_path(row[0])
             state.cwd = state.session.cwd
             state.session.version = _str(row[1])[:64]

@@ -108,7 +108,7 @@ def test_an_ambiguous_id_prefix_is_refused(monkeypatch, capsys):
 def test_list_ids_each_name_one_session(monkeypatch, capsys):
     _fixture_projects(monkeypatch)
     assert main(["list", "--agent", "claude-code", "--limit", "50"]) == 0
-    ids = [line.split()[0] for line in capsys.readouterr().out.splitlines() if line.strip()]
+    ids = [line.split()[0] for line in capsys.readouterr().out.splitlines()[1:] if line.strip()]
     assert len(ids) == len(set(ids)) == 12
     for sid in ids:
         assert main(["audit", sid, "--agent", "claude-code", "--no-disk-check", "--json"]) == 0
@@ -189,3 +189,48 @@ def test_unreadable_lines_count_in_the_scope(honest_transcript, tmp_path, capsys
     mixed.write_text("this is not json\n" + original + "{broken\n", encoding="utf-8")
     assert main(["audit", str(mixed), "--no-disk-check", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["scope"]["unrecognised_records"] == 2
+
+
+def test_qa028_limit_and_fail_under_are_checked(honest_transcript, capsys):
+    """QA-028 a, b: --limit has help and must be 1 or more; --fail-under is 0 to 100."""
+    import pytest
+    for argv in (["list", "--limit", "0"], ["list", "--limit", "-1"],
+                 ["audit", honest_transcript, "--fail-under", "-5"],
+                 ["audit", honest_transcript, "--fail-under", "200"]):
+        with pytest.raises(SystemExit) as stop:
+            main(argv)
+        assert stop.value.code == 2
+        assert "is out of range" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["list", "--help"])
+    assert "show at most N sessions" in capsys.readouterr().out
+    assert main(["audit", honest_transcript, "--no-disk-check", "--fail-under", "0"]) == 0
+
+
+def test_qa028_list_names_the_filter_and_has_headings(monkeypatch, capsys):
+    """QA-028 c, d."""
+    _fixture_projects(monkeypatch)
+    assert main(["list", "--agent", "claude-code", "--project", "nosuch"]) == 2
+    assert capsys.readouterr().err.strip() == (
+        "no transcripts found under ~/.claude/projects matching --project nosuch")
+    assert main(["list", "--agent", "claude-code", "--limit", "1"]) == 0
+    heading = capsys.readouterr().out.splitlines()[0]
+    assert heading.split() == ["ID", "MODIFIED", "SIZE", "PROJECT"]
+
+
+def test_qa028_a_missing_path_is_quoted_as_typed(capsys):
+    """QA-028 f: no doubled backslashes from a Python repr."""
+    target = chr(92).join(["C:", "no", "such", "file.jsonl"])  # C:, backslashes
+    assert main(["audit", target, "--agent", "claude-code"]) == 2
+    assert capsys.readouterr().err.strip() == f'donediff: no transcript matching "{target}"'
+
+
+def test_qa028_goose_location_uses_the_home_form(tmp_path, monkeypatch):
+    """QA-028 e: Goose names its database as ~/..., like the other readers."""
+    from donediff.readers import goose
+    monkeypatch.setattr(goose.os.path, "expanduser", lambda p: str(tmp_path))
+    monkeypatch.setattr(goose, "database_path",
+                        lambda: tmp_path / "data" / "sessions" / "sessions.db")
+    assert goose.GOOSE.location == "~/data/sessions/sessions.db"
+    monkeypatch.setattr(goose, "database_path", lambda: tmp_path.parent / "elsewhere.db")
+    assert goose.GOOSE.location == str(tmp_path.parent / "elsewhere.db")

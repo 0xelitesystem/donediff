@@ -88,7 +88,7 @@ def pick_session(candidates: list, target: str, keys, location: str):
     pairs = [(c, tuple(keys(c))) for c in candidates]
     found = _matches(pairs, target)
     if not found:
-        raise FileNotFoundError(f"no transcript matching {target!r}")
+        raise FileNotFoundError(f'no transcript matching "{target}"')
     if len(found) == 1:
         return found[0]
     names = [_short_id(pairs, c) for c in found[:_LISTED]]

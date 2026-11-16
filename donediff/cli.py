@@ -92,6 +92,20 @@ def run_audit(target: str, project: str | None = None, check_disk: bool = True,
     return score_audit(result)
 
 
+def _whole_number(low: int, high: int | None = None):
+    """An argparse type: a whole number from low (to high), else a plain usage error."""
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text} is not a whole number") from None
+        if value < low or (high is not None and value > high):
+            span = f"from {low} to {high}" if high is not None else f"{low} or more"
+            raise argparse.ArgumentTypeError(f"{text} is out of range: use {span}")
+        return value
+    return parse
+
+
 def _cannot_write(where: str, exc: OSError) -> int:
     reason = exc.strerror or exc.__class__.__name__
     try:
@@ -143,12 +157,14 @@ def _cmd_list(args: argparse.Namespace) -> int:
     found = reader.discover(args.project)
     transcripts = found[: args.limit]
     if not transcripts:
-        print(f"no transcripts found under {reader.location}", file=sys.stderr)
+        where = f" matching --project {args.project}" if args.project else ""
+        print(f"no transcripts found under {reader.location}{where}", file=sys.stderr)
         return 2
     # ids long enough that each names one session (QA-024), so `audit <id>` gets that row
     ids = [_UNSAFE_ID.sub("?", i) for i in short_ids(found, transcripts, reader.session_keys,
                                                   getattr(reader, "id_width", 8))]
-    width = max(len(i) for i in ids)
+    width = max(len(i) for i in ids + ["ID"])
+    print(f"{'ID'.ljust(width)}  {'MODIFIED':<16}  {'SIZE':>9}  PROJECT")
     for path, short_id in zip(transcripts, ids):
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         size_kb = path.stat().st_size // 1024
@@ -177,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--md", metavar="FILE", help="write Markdown report to FILE")
     audit.add_argument("--no-disk-check", action="store_true",
                        help="skip filesystem and git verification")
-    audit.add_argument("--fail-under", type=int, metavar="N",
+    audit.add_argument("--fail-under", type=_whole_number(0, 100), metavar="N",
                        help="exit 1 if the donediff score is below N, "
                             "exit 3 if the session has no score (for CI)")
     audit.add_argument("--no-color", action="store_true", help="plain output")
@@ -187,7 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     lst = sub.add_parser("list", help="list recent session transcripts")
     lst.add_argument("--project", help="filter by project folder name")
-    lst.add_argument("--limit", type=int, default=15)
+    lst.add_argument("--limit", type=_whole_number(1), default=15, metavar="N",
+                     help="show at most N sessions, newest first (default: 15)")
     lst.add_argument("--agent", choices=AGENT_CHOICES, default="auto",
                      help="which coding agent's sessions to list (default: auto)")
     lst.set_defaults(func=_cmd_list)
