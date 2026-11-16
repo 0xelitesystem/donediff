@@ -58,6 +58,8 @@ class ClaudeCodeReader:
         record = first_record(path)
         if record is None or "payload" in record:
             return False
+        if "projectHash" in record and "type" not in record:
+            return False  # a Gemini CLI session's metadata line, not Claude Code
         return record.get("type") in _RECORD_TYPES or "sessionId" in record
 
     def describe(self, path: Path) -> tuple[str, str]:

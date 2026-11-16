@@ -134,3 +134,10 @@ def _no_real_opencode_db(monkeypatch, tmp_path_factory):
     empty = tmp_path_factory.mktemp("opencode-data")
     monkeypatch.setenv("OPENCODE_DB", str(empty / "opencode.db"))
     monkeypatch.setenv("XDG_DATA_HOME", str(empty))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gemini_sessions(monkeypatch, tmp_path_factory):
+    """Point GEMINI_CLI_HOME at an empty folder so no test sees a real ~/.gemini."""
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path_factory.mktemp("gemini-home")))
+    monkeypatch.delenv("SANDBOX", raising=False)

@@ -14,9 +14,9 @@ Options:
   --fail-under N    exit 1 if the donediff score is below N, exit 3 if the
                     session has no score (CI gate)
   --no-color        disable ANSI colors
-  --agent NAME      transcript reader: auto (default), claude-code, codex or
-                    opencode (target: a session id, the database path, or
-                    the database path + "#<session id>")
+  --agent NAME      transcript reader: auto (default), claude-code, codex,
+                    opencode or gemini (opencode target: a session id, the
+                    database path, or the database path + "#<session id>")
 
 Exit codes:
   0  audit ran (and, with --fail-under, the score is N or more)
