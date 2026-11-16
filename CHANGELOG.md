@@ -59,13 +59,24 @@ donediff now reads more coding agents than Claude Code.
 - Gaming signals on a rewound call end with "(rewound)".
 - JSON and Markdown reports show a home folder as `~` (for example
   `/home/<name>/project` becomes `~/project`) in the transcript path, the
-  project folder, evidence and gaming-signal text, so a report attached to a
+  project folder, evidence, gaming-signal text and each claim's quote,
+  sentence and detail, so a report attached to a
   CI run or an issue carries no user name. The JSON keys are the same; only
   these values are shorter. `--full-paths` keeps the full paths. The terminal
   report is unchanged.
+- `list` prints a heading row (ID MODIFIED SIZE PROJECT); scripts that parse
+  it should skip line 1.
 
 ### Fixed
 
+- An id prefix matching more than one session is refused with the matches
+  listed (exit 2) instead of auditing one of them.
+- A report file that cannot be written exits 2 with one line (was a
+  traceback and exit 1).
+- Unreadable lines count in `unrecognised_records`, and a file that is not a
+  transcript says so.
+- `--main-only` is reported only when it was passed.
+- `--limit` and `--fail-under` values out of range are refused.
 - SEC-203: a relative `$OPENCODE_DB` joined onto a network `$XDG_DATA_HOME`
   is refused; the final path is checked, not only its parts.
 - SEC-204: opening an opencode database in WAL mode no longer creates files
