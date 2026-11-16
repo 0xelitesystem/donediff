@@ -47,7 +47,10 @@ L3014-3050, replace_conversation_inner L2323-2330). Deleted rows cannot be
 read. Message ids are AUTOINCREMENT and never reused, so ids missing between
 two of a session's rows mean rows were deleted there. A passing exit code
 logged before such a gap is then kept as a status only: the deleted part may
-have held a later edit or failure, so it can never read as proof.
+have held a later edit or failure, so it can never read as proof. A whole
+conversation deleted and re-inserted under new ids (SEC-215) leaves no gap
+inside the session; ids missing right below it, or another session's older id
+logged later than its first message, mark it, and then no pass in it counts.
 
 The database is opened read-only (URI mode=ro, query_only; immutable for a
 WAL file with no side files, SEC-204) for one read and closed; nothing is
@@ -538,11 +541,44 @@ class _Parse:
                 event.status = _REWOUND
 
 
-def _last_deleted_gap(conn, ids: list[int]) -> int | None:
-    """The last of this session's row ids that has deleted rows right after it."""
-    if len(ids) < 2:
+_SECONDS_SQL = f"CASE WHEN created_timestamp > {_MS} THEN created_timestamp / 1000 ELSE created_timestamp END"
+
+
+def _rewritten(conn, sid: str, low: int) -> bool:
+    """True when the session's rows look deleted and re-inserted (SEC-215).
+
+    replace_conversation_inner (session_manager.rs L2323-2330, used by
+    session --edit / --fork and the state machine) deletes every row of the
+    session and inserts the kept part again under new ids. Two traces of that:
+    ids missing right below the session's lowest id, or an older id (another
+    session's row) logged later than this session's first message, which a
+    plain append can never produce.
+    """
+    prev = conn.execute('SELECT MAX(id) FROM "messages" WHERE id < ?', (low,)).fetchone()[0]
+    if low - (prev if isinstance(prev, int) else 0) > 1:
+        return True
+    first = conn.execute(f'SELECT MIN({_SECONDS_SQL}) FROM "messages" WHERE session_id = ?',
+                         (sid,)).fetchone()[0]
+    if not isinstance(first, (int, float)) or isinstance(first, bool):
+        return True  # no usable time: the order cannot be proved
+    later = conn.execute(f'SELECT 1 FROM "messages" WHERE id < ? AND {_SECONDS_SQL} > ? LIMIT 1',
+                         (low, first)).fetchone()
+    return later is not None
+
+
+def _last_deleted_gap(conn, ids: list[int], sid: str = "") -> int | None:
+    """The last of this session's row ids that has deleted rows right after it.
+
+    A whole-conversation rewrite returns the highest id: nothing in the
+    session can then prove a pass (SEC-215).
+    """
+    if not ids:
         return None
     low, high = ids[0], ids[-1]
+    if _rewritten(conn, sid, low):
+        return high
+    if len(ids) < 2:
+        return None
     total = conn.execute('SELECT COUNT(*) FROM "messages" WHERE id BETWEEN ? AND ?',
                          (low, high)).fetchone()[0]
     if total == high - low + 1:
@@ -580,7 +616,7 @@ def parse_session(path: SessionPath) -> Session:
                 'FROM "messages" WHERE session_id = ? ORDER BY created_timestamp, id LIMIT ?',
                 (_MAX_ROW, sid, _MAX_ROWS)).fetchall()
             ids = sorted(r[0] for r in rows if isinstance(r[0], int))
-            gap = _last_deleted_gap(conn, ids)
+            gap = _last_deleted_gap(conn, ids, sid)
     except sqlite3.Error as exc:
         raise UnreadableSession(_why(exc)) from None
     for rowid, role, created, metadata, raw in rows:
