@@ -141,3 +141,10 @@ def _no_real_gemini_sessions(monkeypatch, tmp_path_factory):
     """Point GEMINI_CLI_HOME at an empty folder so no test sees a real ~/.gemini."""
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path_factory.mktemp("gemini-home")))
     monkeypatch.delenv("SANDBOX", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_qwen_sessions(monkeypatch, tmp_path_factory):
+    """Point QWEN_HOME at an empty folder so no test sees a real ~/.qwen."""
+    monkeypatch.setenv("QWEN_HOME", str(tmp_path_factory.mktemp("qwen-home")))
+    monkeypatch.delenv("QWEN_RUNTIME_DIR", raising=False)

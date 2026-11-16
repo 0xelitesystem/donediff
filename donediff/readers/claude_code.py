@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .. import delegated, parser
 from ..models import Session
+from .qwen import is_qwen_record
 
 # Record types a Claude Code transcript starts with or holds.
 _RECORD_TYPES = frozenset({
@@ -60,6 +61,8 @@ class ClaudeCodeReader:
             return False
         if "projectHash" in record and "type" not in record:
             return False  # a Gemini CLI session's metadata line, not Claude Code
+        if is_qwen_record(record):
+            return False  # a Qwen Code record (message parts, not content)
         return record.get("type") in _RECORD_TYPES or "sessionId" in record
 
     def describe(self, path: Path) -> tuple[str, str]:

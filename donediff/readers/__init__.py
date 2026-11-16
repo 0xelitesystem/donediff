@@ -4,9 +4,10 @@ How "auto" picks a reader:
 - a target that is a file: the first reader whose detect() is True for it,
   else Claude Code (an empty or unknown file reads as before);
 - "latest": Claude Code, unless it has no sessions; then the first of Codex,
-  opencode and Gemini CLI that has some;
-- a session-id prefix: the first of Claude Code, Codex, opencode and Gemini CLI with a
-  matching session, else Claude Code (whose "not found" message is shown);
+  opencode, Gemini CLI and Qwen Code that has some;
+- a session-id prefix: the first of Claude Code, Codex, opencode, Gemini CLI and
+  Qwen Code with a matching session, else Claude Code (whose "not found"
+  message is shown);
   an opencode database path with "#<session-id prefix>" goes to opencode;
 - `list`: as "latest".
 """
@@ -20,8 +21,9 @@ from .claude_code import CLAUDE_CODE
 from .codex import CODEX
 from .gemini import GEMINI
 from .opencode import OPENCODE
+from .qwen import QWEN
 
-READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI)
+READERS: tuple[Reader, ...] = (CLAUDE_CODE, CODEX, OPENCODE, GEMINI, QWEN)
 AGENT_CHOICES = ("auto", *(r.name for r in READERS))
 
 __all__ = ["AGENT_CHOICES", "READERS", "Reader", "UnreadableSession", "select",

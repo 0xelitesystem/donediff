@@ -1,0 +1,12 @@
+contract-chat-records.jsonl: licensed fixture, not a real run.
+
+Origin: github.com/QwenLM/qwen-code,
+integration-tests/fixtures/chat-transcript-contract/v1/cases/representative/chat-records.jsonl
+Read at commit 516e963f7a401053c18c23b32b007ec1fb70848f (branch main, 2026-11-15); the file
+last changed in commit 5003ab3c7f0d35ce00de61ed43a6698fcd2cc25f.
+Copyright as stated in the qwen-code LICENSE (2025 Google LLC, 2025 Qwen). Licensed under the Apache License, Version 2.0; a copy of the licence
+is in LICENSE-qwen-code.txt beside this file. Copied unmodified, byte for byte.
+
+It is a hand-written contract test case from the Qwen Code project ("session-test",
+"/workspace/project"), used here only to check that donediff's Qwen Code reader parses
+Qwen's own published record shape. It is not a recording of any real session.

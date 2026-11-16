@@ -15,7 +15,7 @@ Options:
                     session has no score (CI gate)
   --no-color        disable ANSI colors
   --agent NAME      transcript reader: auto (default), claude-code, codex,
-                    opencode or gemini (opencode target: a session id, the
+                    opencode, gemini or qwen (opencode target: a session id, the
                     database path, or the database path + "#<session id>")
 
 Exit codes:
