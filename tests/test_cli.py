@@ -141,3 +141,19 @@ def test_standard_output_that_cannot_be_written_exits_2(honest_transcript, monke
     assert main(["audit", honest_transcript, "--no-disk-check", "--json"]) == 2
     monkeypatch.setattr(builtins, "print", real_print)
     assert "cannot write the report to standard output: Broken pipe" in capsys.readouterr().err
+
+
+def test_the_version_matches_the_newest_changelog_heading(capsys):
+    """QA-026: --version, JSON and pip all said 0.4.0 under a 0.5.0 CHANGELOG."""
+    import re
+    from donediff import __version__
+    root = Path(__file__).resolve().parent.parent
+    project = root / "pyproject.toml"
+    declared = re.search(r'^version = "([^"]+)"', project.read_text(encoding="utf-8"), re.M)
+    heading = re.search(r"^## (\S+)", (root / "CHANGELOG.md").read_text(encoding="utf-8"), re.M)
+    assert declared.group(1) == __version__ == heading.group(1)
+    try:
+        main(["--version"])
+    except SystemExit:
+        pass
+    assert capsys.readouterr().out.strip() == f"donediff {__version__}"
