@@ -6,6 +6,9 @@ Every registered reader has a builder here, tests/conformance/<reader>.py
 - AGENT: the reader's --agent name;
 - CANNOT: {(shape, claim): one-line reason, from the agent's source or log
   format, why this reader cannot express that shape};
+- RUN_UNCLEAR (optional): {shape: one-line reason, with its source} for a
+  skipped or cancelled shape the reader cannot tell from a real failure; the
+  "exactly UNVERIFIED" check then skips it with that reason;
 - build(project, shape, claim) -> the audit target: a synthetic session whose
   working folder is `project`, holding one tool call in the given shape and
   then the claim.

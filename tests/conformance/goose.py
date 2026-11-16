@@ -13,6 +13,11 @@ mk = load_fixture("goose", "make_goose.py")
 
 AGENT = "goose"
 CANNOT: dict = {}
+# Goose writes no record of its own for a cancelled call (goose-agent
+# tool.rs finalize_cancellation keeps only responses already made, block/goose
+# 8ba5f35a1214): the shape below is an error result, which reads as a failure.
+RUN_UNCLEAR = {CANCELLED: "Goose writes no cancel record (goose-agent tool.rs "
+                          "finalize_cancellation): an error result reads as a failure"}
 
 # The start of Goose's CHAT_MODE_TOOL_SKIPPED_RESPONSE (block/goose d8de0e7,
 # ops_remaining_tool_calls.rs:87-92); the rest of the text is synthetic.

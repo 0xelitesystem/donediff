@@ -28,8 +28,8 @@ from donediff.verify import NO_EVIDENCE_STATUS, SUCCESS_STATUS, evidence_of_succ
 CONFORMANCE = Path(__file__).resolve().parent / "conformance"
 sys.path.insert(0, str(CONFORMANCE))
 
-from _common import (BAD_SHAPES, CLAIMS, FILE, SHAPES, SUCCESS, TARGET,  # noqa: E402
-                     TESTS)
+from _common import (BAD_SHAPES, CANCELLED, CLAIMS, FAILED, FILE, SHAPES,  # noqa: E402
+                     SKIPPED, SUCCESS, TARGET, TESTS)
 
 CLAIM_TYPES = {FILE: (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED),
                TESTS: (ClaimType.TESTS_PASS,)}
@@ -106,6 +106,49 @@ def test_reader_conformance(tmp_path, name, shape, claim, disk):
         assert shape in BAD_SHAPES
         assert finding.verdict is not Verdict.VERIFIED, finding.evidence
         assert "succeeded (exit 0)" not in finding.evidence
+
+
+def _not_run_cases():
+    """(reader, shape) for the shapes where a command did not run, and the failed
+    shape, each with the test claim (Agent Security ruling (b), 2026-11-16)."""
+    for name in NAMES:
+        module = BUILDERS[name]
+        cannot = getattr(module, "CANNOT", {}) if module else {}
+        unclear = getattr(module, "RUN_UNCLEAR", {}) if module else {}
+        for shape in (SKIPPED, CANCELLED, FAILED):
+            marks = ()
+            if (shape, TESTS) in cannot:
+                marks = pytest.mark.skip(reason=f"{name} cannot express {shape}/{TESTS}: "
+                                                f"{cannot[shape, TESTS]}")
+            elif shape in unclear:
+                marks = pytest.mark.skip(reason=f"{name} cannot tell {shape} from a failure: "
+                                                f"{unclear[shape]}")
+            yield pytest.param(name, shape, marks=marks, id=f"{name}-{shape}")
+
+
+@pytest.mark.parametrize("name,shape", list(_not_run_cases()))
+def test_a_command_that_did_not_run_is_unverified(tmp_path, name, shape):
+    """A declined, skipped or cancelled command proves nothing either way: a
+    "tests pass" claim after it is exactly UNVERIFIED, never CONTRADICTED. A
+    real failure stays CONTRADICTED."""
+    result = _audit(tmp_path, name, shape, TESTS, False)
+    found = [f for f in result.findings if f.claim.type is ClaimType.TESTS_PASS]
+    assert len(found) == 1, [(f.claim.type, f.verdict) for f in result.findings]
+    expected = Verdict.CONTRADICTED if shape == FAILED else Verdict.UNVERIFIED
+    assert found[0].verdict is expected, found[0].evidence
+    if shape != FAILED:
+        runs = [e for e in result.session.events
+                if e.kind is EventKind.TOOL_CALL and e.check_types]
+        assert runs and all(not e.is_error and e.exit_code is None and not e.failure_hint
+                            and e.status in NO_EVIDENCE_STATUS for e in runs), \
+            [(e.is_error, e.exit_code, e.status) for e in runs]
+
+
+def test_run_unclear_reasons_are_one_line():
+    for name in NAMES:
+        for shape, reason in getattr(BUILDERS[name], "RUN_UNCLEAR", {}).items():
+            assert shape in (SKIPPED, CANCELLED), (name, shape)
+            assert reason.strip() and "\n" not in reason, (name, shape)
 
 
 def test_the_rule_sets_do_not_overlap():

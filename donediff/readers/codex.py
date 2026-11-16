@@ -292,6 +292,24 @@ def exec_result(text: str) -> tuple[int | None, str | None, str]:
             running.group(1) if running and not exited else None, body)
 
 
+# Codex's own whole result for a shell call that never ran or was stopped
+# before a result (openai/codex b8cbdbfeff72): the user rejected it
+# (core/src/tools/events.rs normalizes "rejected by user" to "exec command
+# rejected by user"), or the turn was aborted (core/src/tools/parallel.rs
+# stopped_response: "aborted before dispatch", "aborted by user after Ns",
+# "Wall time: N seconds\naborted by user"; older rollouts wrote "aborted").
+# A real run's result carries an exit header or JSON metadata, so plain text
+# with neither that matches in full is Codex's record, not command output.
+_NOT_RUN = ((re.compile(r"exec command rejected by user"), "declined"),
+            (re.compile(r"aborted(?: before dispatch| by user after [0-9.]+s)?"
+                        r"|Wall time: [0-9.]+ seconds\naborted by user"), "cancelled"))
+
+
+def _not_run(body: str) -> str | None:
+    text = body.strip()
+    return next((status for rx, status in _NOT_RUN if rx.fullmatch(text)), None)
+
+
 # apply_patch's own summary on success (codex-rs apply-patch print_summary).
 _PATCH_SUCCESS = "Success. Updated the following files:"
 
@@ -580,6 +598,10 @@ class _Parse:
 
     def _shell_output(self, event: Event, text: str, success: bool | None) -> None:
         code, running, body = exec_result(text)
+        not_run = _not_run(body) if code is None and running is None else None
+        if not_run is not None:
+            event.mark_not_run(not_run, body)  # never ran: no evidence either way
+            return
         event.output = body
         if code is not None:
             event.exit_code = code
@@ -643,9 +665,14 @@ class _Parse:
             event.exit_code = code
             event.is_error = code != 0
             event.status = "completed" if code == 0 else "failed"
+        elif status == "declined" and not event.is_error:
+            # Declined: the command never ran (Codex maps every ToolError::Rejected
+            # here, codex-rs/core/src/tools/events.rs): no evidence either way (D087).
+            event.mark_not_run(status, event.output)
+            return
         elif status:
             event.status = status
-            event.is_error = event.is_error or status in ("failed", "declined")
+            event.is_error = event.is_error or status == "failed"
         self._hints(event)
 
     def patch_end(self, payload: dict) -> None:

@@ -77,6 +77,18 @@ _V2_MESSAGES = frozenset({"agent-switched", "model-switched", "location-switched
                           "synthetic", "system", "skill", "shell", "assistant",
                           "compaction", "idle"})
 _WAITING = frozenset({"pending", "running", "streaming"})
+# opencode's own error text on a tool part that never ran or was stopped before
+# a result: the permission was rejected (PermissionNext RejectedError, with or
+# without the user's feedback after it) or the turn was aborted (the session
+# processor marks every unfinished tool part "Tool execution aborted"). Status
+# words are in verify.NO_EVIDENCE_STATUS: a command reads UNVERIFIED (D087).
+_NOT_RUN = (("The user rejected permission to use this specific tool call", "declined"),
+            ("Tool execution aborted", "cancelled"))
+
+
+def _not_run(error: str) -> str | None:
+    head = error.lstrip()
+    return next((status for start, status in _NOT_RUN if head.startswith(start)), None)
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]")
 _ID = re.compile(r"^[0-9A-Za-z_-]{1,128}$")
 
@@ -478,10 +490,15 @@ class _Parse:
         meta = meta if isinstance(meta, dict) else {}
         output = state.get("output") if "output" in state else state.get("content")
         text = _content_text(output)
+        not_run = None
         if status == "error":
             error = _error_text(state.get("error"))
             text = f"{text}\n{error}".strip() if text else error
+            not_run = _not_run(error)
         for event in events:
+            if not_run is not None and _exit(meta.get("exit")) is None:
+                event.mark_not_run(not_run, text)  # never ran: no evidence either way
+                continue
             event.result_seen = True
             event.output = text
             if event.tool_action != SHELL:

@@ -64,6 +64,26 @@ _BACKGROUND_TEXT = re.compile(
     r"^\s*Command running in background|moved to the background", re.IGNORECASE)
 _BACKGROUND_ID = re.compile(r"\bID:?\s*([0-9A-Za-z_-]{3,64})")
 _NOTICE_EXIT = re.compile(r"exit code (\d+)", re.IGNORECASE)
+# Claude Code's own words for a tool use that never ran or was cut off before
+# a result (is_error true, no stdout/stderr record): the user rejected it at
+# the permission prompt, or interrupted the turn. Status words are in
+# verify.NO_EVIDENCE_STATUS. A command that did not run reads UNVERIFIED (D087).
+_NOT_RUN = (("The user doesn't want to proceed with this tool use.", "declined"),
+            ("[Request interrupted by user for tool use]", "cancelled"))
+
+
+def not_run_status(block: dict, text: str, tool_use_result) -> str | None:
+    """"declined" or "cancelled" when Claude Code's own record says the tool
+    use never ran or was interrupted before a result, else None. Only an
+    is_error result whose text starts with Claude Code's message, with no
+    exit code in it and no stdout/stderr record, counts: a command's own
+    output never turns a failure into "did not run"."""
+    if block.get("is_error") is not True or isinstance(tool_use_result, dict):
+        return None
+    if _EXIT_CODE_RE.search(text[:500]):
+        return None
+    head = text.lstrip()
+    return next((status for start, status in _NOT_RUN if head.startswith(start)), None)
 
 
 def background_id(tool_use_result, text: str) -> str | None:
@@ -297,9 +317,14 @@ def parse_transcript(path: str | Path) -> Session:
                     event = pending.pop(str(block.get("tool_use_id", "")), None)
                     if event is None:
                         continue
+                    text = _result_text(block, tool_use_result)
+                    not_run = not_run_status(block, text, tool_use_result)
+                    if not_run is not None and event.tool_name not in _DELEGATING_TOOLS:
+                        event.mark_not_run(not_run, text)
+                        continue
                     event.result_seen = True
                     event.is_error = bool(block.get("is_error"))
-                    event.output = _result_text(block, tool_use_result)
+                    event.output = text
                     exit_code_of(event)
                     event.failure_hint = bool(FAILURE_IN_OUTPUT.search(event.output))
                     event.pass_hint = bool(PASS_IN_OUTPUT.search(event.output))

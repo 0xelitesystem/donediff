@@ -98,6 +98,22 @@ _REWOUND = "completed, later log rows were deleted"
 # the tool never ran (block/goose d8de0e7 crates/goose/src/agents/
 # state_machine/ops_remaining_tool_calls.rs:87-92, CHAT_MODE_TOOL_SKIPPED_RESPONSE).
 _SKIPPED = "Let the user know the tool call was skipped in goose chat mode"
+# Goose's own isError text for a call that never ran (block/goose 8ba5f35a1214):
+# a permission denied by rule (crates/goose/src/agents/tool_execution.rs
+# DECLINED_RESPONSE, used by state_machine/tool_approval.rs:80), a user who
+# answered no (crates/goose-agent/src/tool_approval.rs DEFAULT_DECLINED_MESSAGE),
+# both written by tool_call_state.rs add_error_response as a success-status
+# CallToolResult::error; and a call no operation handled
+# (unhandled_tool_calls.rs NOT_HANDLED_MESSAGE). Status words are in
+# verify.NO_EVIDENCE_STATUS: a command reads UNVERIFIED (D087).
+_NOT_RUN = (("The user has declined to run this tool.", "declined"),
+            ("The user declined to run this tool.", "declined"),
+            ("This tool call was not handled.", "skipped"))
+
+
+def _not_run(text: str) -> str | None:
+    head = text.lstrip()
+    return next((status for start, status in _NOT_RUN if head.startswith(start)), None)
 
 
 # -- where the database is ----------------------------------------------------
@@ -506,9 +522,13 @@ class _Parse:
             # A write or edit is a failure; a command is status only (it did
             # not fail either), with no exit code and no hints from the text.
             for event in events:
-                event.result_seen, event.status = True, "declined"
-                event.is_error = event.tool_action != SHELL
-                event.output, event.exit_code = text, None
+                event.mark_not_run("declined", text)
+            return
+        not_run = _not_run(text) if is_error and not failed else None
+        if not_run is not None and (structured is None or "exit_code" not in structured):
+            for event in events:
+                if not (event.result_seen and event.is_error):  # a logged failure still wins
+                    event.mark_not_run(not_run, text)  # never ran: no evidence either way
             return
         for event in events:
             if event.result_seen and not (is_error and not event.is_error):

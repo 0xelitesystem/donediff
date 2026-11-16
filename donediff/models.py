@@ -51,7 +51,8 @@ class Event:
       "completed" or "success" from the agent's own record; the absence of a
       failure flag is not a success. An outcome the log does not show is
       "unknown"; a call that was skipped, declined or cancelled says so (with
-      is_error for a write or edit).
+      is_error for a write or edit). A command that did not run proves nothing
+      either way: is_error False, no exit code, no hints (mark_not_run).
     - rewound: True for a call a rewind left behind; it is never evidence.
     """
 
@@ -119,6 +120,21 @@ class Event:
 
     def is_file_edit(self) -> bool:
         return self.tool_action in FILE_ACTIONS
+
+    def mark_not_run(self, status: str, output: str = "") -> None:
+        """The agent's own record says this call never ran (declined, skipped)
+        or was cancelled before a result: no evidence either way (D087, Agent
+        Security ruling (b) 2026-11-16). A command reads UNVERIFIED, never
+        CONTRADICTED: is_error False, no exit code, no hints from the text. A
+        write or edit stays a failure (is_error), as before. `status` must be
+        a word in verify.NO_EVIDENCE_STATUS ("declined", "skipped", "cancelled")."""
+        self.result_seen = True
+        self.status = status
+        self.output = output
+        self.exit_code = None
+        self.is_error = self.tool_action != SHELL
+        self.failure_hint = self.pass_hint = False
+        self.passed_counts = frozenset()
 
 
 @dataclass

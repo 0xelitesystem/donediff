@@ -94,6 +94,22 @@ _PATCH_TOOLS = frozenset({"apply_patch"})
 _EXITED = re.compile(r"Command exited with code (-?\d+)")
 _NOTICE = re.compile(r"^\[Command exited with code -?\d+\]\n?")
 _WORKDIR = re.compile(r"^\d+\. Working Directory: (.+)$", re.M)
+# Cline's own text for a tool call that never ran, as the whole is_error result
+# with no ToolOperationResult (a run_commands result is otherwise always a
+# list): the user denied the approval (apps/vscode/src/sdk/tool-approval-denial.ts
+# at 146894b6a42a: EDIT_TOOL_APPROVAL_DENIAL_REASON, and the default
+# USER_REJECTED_TOOL_REASON from @cline/shared, "The user denied this operation."
+# as in the SEC-212 fixtures; any feedback follows), or the call was cancelled
+# before it ran (USER_MESSAGE_TOOL_APPROVAL_DENIAL_REASON, "Tool execution was
+# cancelled because ..."). Status words are in verify.NO_EVIDENCE_STATUS (D087).
+_NOT_RUN = (("The user denied this operation", "declined"),
+            ("The user denied this edit", "declined"),
+            ("Tool execution was cancelled", "cancelled"))
+
+
+def _not_run(text: str) -> str | None:
+    head = text.lstrip()
+    return next((status for start, status in _NOT_RUN if head.startswith(start)), None)
 
 
 # -- where the sessions are ---------------------------------------------------
@@ -399,6 +415,11 @@ class _Build:
             pairs = [(e, by_query.get(e.command)) for e in events]
         else:
             pairs = list(zip(events, ops))
+        if not ops and block.get("is_error") is True and _not_run(text):
+            for event in events:
+                if not event.is_error:  # an earlier failing copy still wins
+                    event.mark_not_run(_not_run(text), text)  # never ran: no evidence
+            return
         if not ops and block.get("is_error") is True:
             pairs = [(e, {"success": False, "error": text}) for e in events]  # the call failed
         elif not ops and text:
