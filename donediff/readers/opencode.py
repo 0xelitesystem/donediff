@@ -56,7 +56,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _absolute, _str
+from .base import UnreadableSession, _absolute, _is_link, _str
 from .base import _int as _exit
 from .codex import _join, clean_path, parse_patch
 
@@ -651,8 +651,8 @@ class OpencodeReader:
         return "$OPENCODE_DB" if os.environ.get("OPENCODE_DB") else "~/.local/share/opencode/opencode.db"
 
     def _list(self, db: Path, project_filter: str | None = None) -> list[SessionPath]:
-        if not db.is_file() or not is_database(db):
-            return []
+        if _is_link(db) or _is_link(db.parent) or not db.is_file() or not is_database(db):
+            return []  # a linked database or folder is never followed (as in Goose)
         try:
             with _connect(db) as conn:
                 rows = _sessions(conn)

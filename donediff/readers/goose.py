@@ -74,7 +74,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _absolute, _str
+from .base import UnreadableSession, _absolute, _is_link, _str
 from .base import _int as _exit
 from .codex import clean_path
 from .opencode import COPY, connect_read_only, is_database
@@ -147,16 +147,6 @@ def database_path() -> Path | None:
         return None
     result = data / "sessions" / "sessions.db"
     return None if is_remote_path(os.fspath(result)) else result
-
-
-def _is_link(path: Path) -> bool:
-    """A symlink or a Windows junction / reparse point (never followed)."""
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False
-    return stat_mod.S_ISLNK(info.st_mode) or bool(
-        getattr(info, "st_file_attributes", 0) & getattr(stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
 def _usable(db: Path) -> bool:

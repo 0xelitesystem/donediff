@@ -390,3 +390,28 @@ def test_wal_db_with_both_side_files_reads_them(tmp_path):
 def test_rollback_journal_db_opens_plain_read_only(tmp_path):
     db = mk.demo(tmp_path / "opencode.db")
     assert oc._open_mode(Path(db)) == "?mode=ro"
+
+
+# -- links are never followed (as in Goose) -------------------------------------
+
+def test_linked_database_or_folder_is_never_opened(tmp_path, monkeypatch):
+    db = mk.Builder(tmp_path / "opencode.db", "v2").session("ses_link001").close()
+    monkeypatch.setenv("OPENCODE_DB", str(db))
+    assert [p.session_id for p in OPENCODE.discover()] == ["ses_link001"]
+    for linked in (Path(db), Path(db).parent):
+        monkeypatch.setattr(oc, "_is_link", lambda p, linked=linked: Path(p) == linked)
+        assert OPENCODE.discover() == []
+        with pytest.raises(FileNotFoundError):
+            OPENCODE.resolve(str(db))
+
+
+def test_symlinked_database_is_skipped(tmp_path, monkeypatch):
+    import os
+    real = mk.Builder(tmp_path / "elsewhere.db", "v2").session("ses_link002").close()
+    link = tmp_path / "opencode.db"
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlink rights here")
+    monkeypatch.setenv("OPENCODE_DB", str(link))
+    assert OPENCODE.discover() == []

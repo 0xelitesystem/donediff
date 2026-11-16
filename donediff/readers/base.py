@@ -8,11 +8,22 @@ claims, checks, gaming signals and the score never see the agent's format.
 from __future__ import annotations
 
 import os
+import stat as stat_mod
 from pathlib import Path
 from typing import Protocol
 
 from ..models import Session
 from ..shell import is_remote_path
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or a Windows junction / reparse point (never followed)."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat_mod.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
 def _absolute(value: str | None) -> Path | None:
