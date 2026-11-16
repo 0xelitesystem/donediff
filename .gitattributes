@@ -1,3 +1,4 @@
 tests/fixtures/sessions/** -text
 tests/fixtures/cline/session.messages.json -text
 tests/fixtures/cline/LICENSE-cline.txt -text
+tests/fixtures/goose/LICENSE-goose.txt -text

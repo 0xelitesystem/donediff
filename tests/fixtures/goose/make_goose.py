@@ -1,9 +1,11 @@
 """Build synthetic Goose sessions.db files for the tests (stdlib sqlite3 only).
 
-The tables are copied from Goose's own schema: github.com/aaif-goose/goose,
+The table definitions are adapted from Goose's own schema (Apache License 2.0;
+see LICENSE-goose.txt in this folder): github.com/aaif-goose/goose,
 commit d8de0e789f1931cd54d6764dee931166b6c091ca,
 crates/goose/src/session/session_manager.rs L1157-1225 (schema_version,
-sessions, messages; CURRENT_SCHEMA_VERSION 18 at L33). Message blocks follow
+sessions, messages; CURRENT_SCHEMA_VERSION 18 at L33). Changed from the
+original: reformatted, IF NOT EXISTS removed. Message blocks follow
 crates/goose-provider-types/src/conversation/message.rs and
 tool_result_serde.rs at the same commit; the developer shell result follows
 crates/goose/src/agents/platform_extensions/developer/shell.rs (ShellOutput,
