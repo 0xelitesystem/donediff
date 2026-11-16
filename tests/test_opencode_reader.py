@@ -307,6 +307,42 @@ def test_relative_db_on_a_remote_data_home_is_never_used(monkeypatch, xdg):
     assert oc.database_path() is None
 
 
+# -- a relative or drive-relative XDG_DATA_HOME / home (SEC-216 class) ----------
+
+def _home(monkeypatch, home, xdg=None, db=None):
+    for var in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(var, str(home))
+    for var, value in (("XDG_DATA_HOME", xdg), ("OPENCODE_DB", db)):
+        if value is None:
+            monkeypatch.delenv(var, raising=False)
+        else:
+            monkeypatch.setenv(var, value)
+
+
+@pytest.mark.parametrize("xdg", ["rel/xdg", "rel\\xdg", "C:relative", "."])
+def test_relative_xdg_data_home_falls_back_as_if_unset(tmp_path, monkeypatch, xdg):
+    _home(monkeypatch, tmp_path / "home", xdg=xdg)
+    db = oc.database_path()
+    assert db == tmp_path / "home" / ".local" / "share" / "opencode" / "opencode.db"
+    assert db.is_absolute()
+    _home(monkeypatch, tmp_path / "home", xdg=xdg, db="custom.db")
+    assert oc.database_path() == tmp_path / "home" / ".local" / "share" / "opencode" / "custom.db"
+
+
+@pytest.mark.parametrize("xdg", [None, "rel/xdg", "C:relative"])
+def test_relative_home_is_refused_not_resolved(monkeypatch, xdg):
+    _home(monkeypatch, "relhome", xdg=xdg)
+    assert oc.database_path() is None and OPENCODE.discover() == []
+    _home(monkeypatch, "relhome", xdg=xdg, db="custom.db")
+    assert oc.database_path() is None
+
+
+def test_absolute_opencode_db_is_kept_whatever_the_home(tmp_path, monkeypatch):
+    target = tmp_path / "elsewhere" / "opencode.db"
+    _home(monkeypatch, "relhome", xdg="rel/xdg", db=str(target))
+    assert oc.database_path() == target
+
+
 def _to_wal(db) -> None:
     conn = sqlite3.connect(db)
     assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"

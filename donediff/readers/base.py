@@ -7,10 +7,23 @@ claims, checks, gaming signals and the score never see the agent's format.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Protocol
 
 from ..models import Session
+from ..shell import is_remote_path
+
+
+def _absolute(value: str | None) -> Path | None:
+    """The value as a Path when it is absolute, else None (SEC-216 class).
+
+    A relative or drive-relative data-folder variable is ignored, so a reader
+    falls back as if it were unset instead of resolving it against the working
+    folder. A share path counts as absolute (older Pythons say "//srv/share" is
+    not), so the caller refuses it instead of silently falling back.
+    """
+    return Path(value) if value and (os.path.isabs(value) or is_remote_path(value)) else None
 
 
 def _str(value) -> str:

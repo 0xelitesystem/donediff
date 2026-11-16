@@ -74,7 +74,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _str
+from .base import UnreadableSession, _absolute, _str
 from .base import _int as _exit
 from .codex import clean_path
 from .opencode import COPY, connect_read_only, is_database
@@ -118,12 +118,6 @@ def _not_run(text: str) -> str | None:
 
 
 # -- where the database is ----------------------------------------------------
-
-def _absolute(value: str | None) -> Path | None:
-    # A share path counts as absolute (older Pythons say "//srv/share" is not),
-    # so it is refused below instead of silently falling back to the default.
-    return Path(value) if value and (os.path.isabs(value) or is_remote_path(value)) else None
-
 
 def data_dir() -> Path | None:
     """Goose's data folder, or None when it would be on a remote share.

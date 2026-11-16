@@ -56,7 +56,7 @@ from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_co
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
-from .base import UnreadableSession, _str
+from .base import UnreadableSession, _absolute, _str
 from .base import _int as _exit
 from .codex import _join, clean_path, parse_patch
 
@@ -97,17 +97,24 @@ _ID = re.compile(r"^[0-9A-Za-z_-]{1,128}$")
 # -- where the database is ----------------------------------------------------
 
 def database_path() -> Path | None:
-    """$OPENCODE_DB when set (None for a remote or in-memory one), else the default file."""
+    """$OPENCODE_DB when set (None for a remote or in-memory one), else the default file.
+
+    A relative or drive-relative $XDG_DATA_HOME is ignored (as if unset), and a
+    final path that is still not absolute (a relative home) is refused, so it
+    never resolves against the working folder (SEC-216 class).
+    """
     env = os.environ.get("OPENCODE_DB")
-    xdg = os.environ.get("XDG_DATA_HOME")
-    data = (Path(xdg) if xdg else Path(os.path.expanduser("~")) / ".local" / "share") / "opencode"
+    xdg = _absolute(os.environ.get("XDG_DATA_HOME"))
+    data = (xdg or Path(os.path.expanduser("~")) / ".local" / "share") / "opencode"
     if env == ":memory:":
         return None
     path = Path(env) if env else Path("opencode.db")
     result = path if path.is_absolute() else data / path
     # SEC-203: check the final path, so a relative $OPENCODE_DB joined onto a
     # remote $XDG_DATA_HOME is never touched (SMB/NTLM on Windows).
-    return None if is_remote_path(os.fspath(result)) or is_remote_path(env or "") else result
+    if is_remote_path(os.fspath(result)) or is_remote_path(env or "") or not result.is_absolute():
+        return None
+    return result
 
 
 class SessionPath(type(Path())):
