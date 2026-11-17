@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .models import AuditResult, Finding, GamingSeverity, GamingSignal, Session, Verdict
+from .redact import redact_secrets
 
 # Control characters that a terminal would act on instead of showing:
 # C0 (except tab and newline), DEL, C1, and bidi overrides/isolates.
@@ -60,7 +61,12 @@ def home_as_tilde(text: str) -> str:
 
 
 def _shown(text: str, full_paths: bool) -> str:
-    return text if full_paths or not isinstance(text, str) else home_as_tilde(text)
+    """Text from the log as a report shows it: credentials masked (SEC-235),
+    home folders as ~ unless full_paths."""
+    if not isinstance(text, str):
+        return text
+    text = redact_secrets(text)
+    return text if full_paths else home_as_tilde(text)
 
 
 _RESET = "\x1b[0m"
@@ -143,12 +149,12 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
     lines: list[str] = []
     out = lines.append
 
-    title = _safe(session.slug or Path(session.path).stem)
+    title = _safe(redact_secrets(session.slug or Path(session.path).stem))
     out("")
     out(_paint("  donediff", _BOLD, _CYAN, enabled=color)
         + _paint(", claims vs. reality", _DIM, enabled=color))
     out(_paint(f"  session {title} · {len(session.events)} events"
-               + (f" · {_safe(session.cwd)}" if session.cwd else ""),
+               + (f" · {_safe(redact_secrets(session.cwd))}" if session.cwd else ""),
                _DIM, enabled=color))
     out(_paint(f"  {_safe(scope_line(session))}", _DIM, enabled=color))
     out("")
@@ -176,8 +182,8 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
     for finding in result.findings:
         style, symbol, label = _VERDICT_STYLE[finding.verdict]
         out(f"  {_paint(symbol + ' ' + label.ljust(12), style, enabled=color)}"
-            f" “{_safe(finding.claim.quote[:110])}”")
-        out(_paint(f"    └─ {_safe(finding.evidence)}", _DIM, enabled=color))
+            f" “{_safe(redact_secrets(finding.claim.quote)[:110])}”")
+        out(_paint(f"    └─ {_safe(redact_secrets(finding.evidence))}", _DIM, enabled=color))
     out("")
 
     if result.gaming_signals:
@@ -189,7 +195,7 @@ def render_terminal(result: AuditResult, color: bool | None = None) -> str:
                 continue
             style, label = _SEVERITY_STYLE[signal.severity]
             out(f"  {_paint('⚠ ' + label.ljust(5), style, enabled=color)}"
-                f" {_safe(_signal_text(signal))}")
+                f" {_safe(redact_secrets(_signal_text(signal)))}")
         out("")
 
     return "\n".join(lines)

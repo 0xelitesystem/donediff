@@ -12,6 +12,7 @@ import re
 
 from .evidence import log_int
 from .models import Claim, ClaimType, EventKind, Session
+from .redact import redact_secrets
 
 # Sentences containing these are aspirational or negative, not assertions.
 _DISQUALIFIERS = re.compile(
@@ -122,7 +123,9 @@ def extract_claims(session: Session) -> list[Claim]:
     for event in session.events:
         if event.kind is not EventKind.TEXT:
             continue
-        for sentence in _sentences(event.text):
+        # Masked on the raw text, before markdown noise is stripped: a quote
+        # is shown in every report (SEC-235).
+        for sentence in _sentences(redact_secrets(event.text)):
             if len(sentence) > 400:
                 continue  # code blocks / pasted output, not prose
             if _DISQUALIFIERS.search(sentence):
