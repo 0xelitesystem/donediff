@@ -140,9 +140,18 @@ def _refuse_network_repository(project: Path, read_config) -> None:
     (`read_config`: `git config --file <f> --no-includes --list`, run
     outside the repository), so every way git spells a value is seen;
     includes are followed here. Git is not run on the repository on a hit.
+    A project inside a bare repository (a folder that is itself a git
+    directory, which a clone can ship as ordinary tracked files) is refused
+    outright: git would read its config and alternates, not the `.git`.
     """
-    dotgit = next((d / ".git" for d in (project, *project.parents)
-                   if os.path.lexists(d / ".git")), None)
+    dotgit = None
+    for d in (project, *project.parents):
+        if os.path.lexists(d / ".git"):
+            dotgit = d / ".git"
+            break
+        if os.path.isfile(d / "HEAD") and (os.path.isdir(d / "objects")
+                                           or os.path.isfile(d / "commondir")):
+            raise GitError("project folder is inside a bare repository")
     if dotgit is None:
         return  # git will say it is not a work tree
     gitdirs = [_local_target(dotgit)]
@@ -259,6 +268,8 @@ def _hardening_args(hooks: str) -> list[str]:
         "-c", "diff.external=",
         "-c", "log.showSignature=false",
         "-c", "protocol.allow=never",
+        # git never takes a folder as a bare repository unless told to (git 2.38+).
+        "-c", "safe.bareRepository=explicit",
     ]
 
 

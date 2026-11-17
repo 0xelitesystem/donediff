@@ -4,6 +4,7 @@ the fallback when git cannot be read, and a repository built to attack us."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -387,6 +388,57 @@ def test_network_path_forms_git_reads_are_refused(tmp_path, monkeypatch, form):
     for argv in allowed:  # only local config files were parsed
         parsed = Path(argv[argv.index("--file") + 1]).resolve()
         assert parsed.is_relative_to(dotgit.resolve()), parsed
+
+
+def _git_version() -> tuple[int, ...]:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    return tuple(int(n) for n in re.findall(r"\d+", out)[:3])
+
+
+def _embedded_bare(tmp_path: Path, alternates: str) -> Path:
+    """SEC-225 setup: tracked files in a clone shaped like a git directory, config
+    claiming a work tree, alternates pointing elsewhere."""
+    clone = make_repo(tmp_path)
+    sha = commit_file(clone, "src/a.py", "Add a")
+    emb = clone / "vendor" / "tool"
+    git(tmp_path, "init", "-q", "--bare", str(emb))
+    (emb / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    (emb / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (emb / "config").write_text("[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+                                f"\tworktree = {emb.as_posix()}\n", encoding="utf-8")
+    (emb / "objects" / "info" / "alternates").write_text(alternates + "\n", encoding="utf-8")
+    return emb
+
+
+@needs_git
+@pytest.mark.parametrize("alternates", ["network", "local"])
+def test_project_inside_an_embedded_bare_repository_is_refused(tmp_path, monkeypatch,
+                                                                alternates):
+    """SEC-225: the pre-check looked only for `.git`, while git took the embedded folder
+    as a bare repository and read its alternates (over SMB on Windows)."""
+    target = ("\\\\host.invalid\\share\\objects" if alternates == "network"
+              else (tmp_path / "proj" / ".git" / "objects").as_posix())
+    emb = _embedded_bare(tmp_path, target)
+    _refuse_popen(monkeypatch)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "project folder is inside a bare repository"
+    finding = one(audit(tmp_path, emb, commit_records("Add a")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert "git state not checked (project folder is inside a bare repository)" \
+        in finding.evidence
+
+
+@needs_git
+@pytest.mark.skipif(shutil.which("git") is None or _git_version() < (2, 38),
+                    reason="safe.bareRepository needs git 2.38+")
+def test_git_itself_refuses_an_implicit_bare_repository(tmp_path, monkeypatch):
+    """SEC-225, second layer: with the pre-check out of the way, git is run with
+    safe.bareRepository=explicit and does not open the embedded folder."""
+    emb = _embedded_bare(tmp_path, (tmp_path / "proj" / ".git" / "objects").as_posix())
+    monkeypatch.setattr(gitstate, "_refuse_network_repository", lambda *a: None)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "not a git work tree"
 
 
 @needs_git
