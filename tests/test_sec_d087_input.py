@@ -625,3 +625,49 @@ def test_goose_rollback_header_with_live_wal_leaves_the_folder_untouched(tmp_pat
     with pytest.raises(UnreadableSession):
         audit(f"{copy / 'sessions.db'}#20260610_1", "goose")
     assert sorted(p.name for p in copy.iterdir()) == before  # no -shm written
+
+
+# -- SEC-220 scope: home folders seen from WSL, MSYS, Cygwin; any case -----------
+
+def test_wsl_home_becomes_tilde():
+    from donediff.report import home_as_tilde
+    assert home_as_tilde("/mnt/c/Users/alice/proj") == "~/proj"
+    assert home_as_tilde("cd /mnt/D/Users/alice/proj && pytest") == "cd ~/proj && pytest"
+
+
+def test_msys_home_becomes_tilde():
+    from donediff.report import home_as_tilde
+    assert home_as_tilde("/c/Users/alice/proj") == "~/proj"
+
+
+def test_cygwin_home_becomes_tilde():
+    from donediff.report import home_as_tilde
+    assert home_as_tilde("/cygdrive/c/Users/alice/proj") == "~/proj"
+
+
+def test_lowercase_users_becomes_tilde():
+    from donediff.report import home_as_tilde
+    back = chr(92)
+    assert home_as_tilde(back.join(["c:", "users", "alice", "proj"])) == "~" + back + "proj"
+    assert home_as_tilde("/users/alice/proj") == "~/proj"
+    assert home_as_tilde("/mnt/c/users/alice/proj") == "~/proj"
+
+
+def test_paths_that_only_look_alike_are_unchanged():
+    from donediff.report import home_as_tilde
+    for text in ("/srv/c/Users/alice", "/mnt/cd/Users/alice", "/work/users-guide/x",
+                 "/data/mnt/c/Users/alice"):
+        assert home_as_tilde(text) == text
+
+
+def test_engine_keeps_the_real_wsl_path(tmp_path, capsys):
+    records = [assistant_tool("t1", "Bash", {"command": "pytest -q"}),
+               tool_result("t1", "3 passed in 0.1s"), assistant_text("All tests pass.")]
+    for record in records:
+        record["cwd"] = "/mnt/c/Users/alice/proj"
+    path = write_jsonl(tmp_path / "s.jsonl", records)
+    assert audit(path, "claude-code").session.cwd == "/mnt/c/Users/alice/proj"
+    assert cli.main(["audit", path, "--no-disk-check", "--json"]) == 0
+    assert "alice" not in capsys.readouterr().out
+    assert cli.main(["audit", path, "--no-disk-check", "--json", "--full-paths"]) == 0
+    assert "/mnt/c/Users/alice/proj" in capsys.readouterr().out

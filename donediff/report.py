@@ -29,10 +29,14 @@ def _safe(text: str) -> str:
 
 
 # A home folder at the start of a path: <drive>:\\Users\\<name> (either slash),
-# /home/<name> or /Users/<name>. Matched by pattern, not only against this
-# machine's home: the cwd and commands come from the log, which may have been
-# written on another machine (SEC-220).
-_HOME_PREFIX = re.compile(r"(?<![\w.\\/:-])(?:[A-Za-z]:[\\/]+Users[\\/]+|/home/|/Users/)[^\\/\s\"'`|<>]+")
+# the same drive seen from WSL (/mnt/<drive>/Users/<name>), MSYS or Git Bash
+# (/<drive>/Users/<name>) and Cygwin (/cygdrive/<drive>/Users/<name>),
+# /home/<name> or /Users/<name>; "Users" and the drive in any case. Matched
+# by pattern, not only against this machine's home: the cwd and commands come
+# from the log, which may have been written on another machine (SEC-220).
+_HOME_PREFIX = re.compile(
+    r"(?<![\w.\\/:-])(?:[a-z]:[\\/]+users[\\/]+|(?:/mnt|/cygdrive)?/[a-z]/users/"
+    r"|/home/|/users/)[^\\/\s\"'`|<>]+", re.IGNORECASE)
 
 
 def _own_home() -> str:
