@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from .evidence import log_int
 from .models import Claim, ClaimType, EventKind, Session
 
 # Sentences containing these are aspirational or negative, not assertions.
@@ -136,7 +137,8 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
     if claim_type is ClaimType.TEST_COUNT:
         passed, total = groups[0], groups[1]
         # "38 of 40 pass" admits failures; only "N of N" claims all pass.
-        return passed if int(passed) == int(total) and int(passed) > 0 else None
+        count, of = log_int(passed), log_int(total)
+        return passed if count is not None and count == of and count > 0 else None
     if claim_type is ClaimType.COMMIT_ID:
         # A digit sets an id apart from a hex-letter word ("defaced").
         return groups[0].lower() if any(c.isdigit() for c in groups[0]) else None

@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
+from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import complete_background, epoch, loads
 from ..shell import is_remote_path
@@ -288,7 +288,7 @@ def exec_result(text: str) -> tuple[int | None, str | None, str]:
     body = body[1:] if body.startswith("\n") else body
     exited = _EXITED.search(head)
     running = _RUNNING.search(head)
-    return (int(exited.group(1)) if exited else None,
+    return (log_int(exited.group(1), 1) if exited else None,
             running.group(1) if running and not exited else None, body)
 
 

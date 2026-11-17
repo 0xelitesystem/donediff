@@ -32,7 +32,7 @@ import os
 import re
 from pathlib import Path
 
-from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
+from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from .models import CLAUDE_CODE_ACTIONS, SHELL, Delivery, Event, EventKind, Session
 
 def loads(text):
@@ -131,7 +131,7 @@ def background_done(text: str) -> tuple[list[str], int] | None:
     if status not in ("completed", "failed"):
         return None
     match = _NOTICE_EXIT.search(head)
-    code = int(match.group(1)) if match else (0 if status == "completed" else 1)
+    code = log_int(match.group(1), 1) if match else (0 if status == "completed" else 1)
     return [i for i in (found["tool-use-id"], found["task-id"]) if i], code
 
 
@@ -175,7 +175,7 @@ def exit_code_of(event: Event) -> None:
     code; a 0 printed in the text of a failed result is never taken (D087:
     an exit code claimed only by printed text is no success)."""
     match = _EXIT_CODE_RE.search(event.output[:500])
-    code = int(match.group(1)) if match else None
+    code = log_int(match.group(1), 1) if match else None
     if code:
         event.exit_code = code
     elif not event.is_error:

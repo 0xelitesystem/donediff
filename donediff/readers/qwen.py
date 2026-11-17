@@ -53,7 +53,7 @@ import os
 import re
 from pathlib import Path
 
-from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
+from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
@@ -189,7 +189,7 @@ def shell_text(text: str) -> tuple[int | None, str]:
     if not matches or not outputs or matches[-1].start() < outputs[-1].end():
         return None, text
     last = matches[-1]
-    code = None if last.group(1) == "(none)" else int(last.group(1))
+    code = None if last.group(1) == "(none)" else log_int(last.group(1), 1)
     head = text[:last.start()]
     cut = head.rfind("\nError: ")  # the real Error line(s) sit right before Exit Code
     head = head[:cut + 1] if cut >= 0 else head

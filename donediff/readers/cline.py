@@ -71,7 +71,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
+from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import loads
 from ..shell import is_remote_path
@@ -438,7 +438,7 @@ class _Build:
             event.status = "success"  # exit 0 is not written: a status only
         elif success is False:
             exited = _EXITED.fullmatch(error)
-            code = int(exited.group(1)) if exited else 0
+            code = log_int(exited.group(1), 1) if exited else 0
             if code:
                 event.exit_code = code
                 event.status = "failed"

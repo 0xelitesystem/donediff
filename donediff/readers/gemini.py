@@ -54,7 +54,7 @@ import re
 import stat
 from pathlib import Path
 
-from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
+from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import epoch, loads
 from ..shell import is_remote_path
@@ -273,7 +273,7 @@ def shell_result(text: str) -> tuple[int | None, str]:
             if match:
                 lines.pop()
                 if match.groups():
-                    code = int(match.group(1))
+                    code = log_int(match.group(1), 1)
     body = "\n".join(lines)[len("Output: "):]
     if body == "(empty)":
         body = ""

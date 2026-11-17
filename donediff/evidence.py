@@ -108,18 +108,35 @@ _PASSED_COUNT = re.compile(
 )
 _CARGO_RESULT = re.compile(r"test result: ok\. (\d+) passed", re.IGNORECASE)
 
+MAX_DIGITS = 18  # significant digits in a count or exit code read from a log
+
+
+def log_int(text: str, overlong: int | None = None) -> int | None:
+    """int() of a digit run (an optional leading "-") taken from a log.
+
+    A run with more than MAX_DIGITS significant digits gives `overlong`
+    instead: no test count or exit code is that long, and Python refuses
+    to convert over 4300 digits at all (SEC-228). Exit-code callers pass a
+    failure code, since such a number is not 0; count callers drop it.
+    """
+    sign = -1 if text.startswith("-") else 1
+    digits = text.lstrip("-").lstrip("0") or "0"
+    if len(digits) > MAX_DIGITS:
+        return overlong
+    return sign * int(digits)
+
 
 def passed_counts(output: str) -> frozenset[int]:
     """Counts of passing tests the output reports as a total: the last one
     shown, and for cargo (one result line per test binary) their sum."""
     if not output:
         return frozenset()
-    found = [int(next(g for g in m.groups() if g)) for m in _PASSED_COUNT.finditer(output)]
-    if not found:
-        return frozenset()
+    found = [log_int(next(g for g in m.groups() if g)) for m in _PASSED_COUNT.finditer(output)]
+    if not found or found[-1] is None:
+        return frozenset()  # no count, or an overlong last one: no count to match
     totals = {found[-1]}
-    cargo = [int(n) for n in _CARGO_RESULT.findall(output)]
-    if len(cargo) > 1:
+    cargo = [log_int(n) for n in _CARGO_RESULT.findall(output)]
+    if len(cargo) > 1 and None not in cargo:
         totals.add(sum(cargo))
     return frozenset(totals)
 
