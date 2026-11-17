@@ -312,3 +312,87 @@ def test_project_folder_name_with_a_line_separator_is_the_toplevel(tmp_path):
     with gitstate.GitRepo(str(repo)) as found:
         assert found.available, found.reason
         assert Path(found.toplevel) == repo.resolve()
+
+
+# -- SEC-247: confined() reads a link's target before anything follows it --------
+
+from donediff import shell  # noqa: E402
+
+_LINK = "lnk-to-net"
+_NET_TARGET = r"\\host.invalid\share" if os.name == "nt" else "/net/host.invalid/share"
+
+
+def _no_resolve_through_the_link(monkeypatch) -> None:
+    real = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        if _LINK in str(self):
+            raise AssertionError(f"resolve() followed the link: {self}")
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+
+@pytest.mark.parametrize("target", [_NET_TARGET, "//host.invalid/share",
+                                    r"\\?\UNC\host.invalid\share"])
+def test_link_to_a_network_target_is_refused_before_it_is_followed(tmp_path, monkeypatch,
+                                                                    target):
+    root = tmp_path / "proj"
+    root.mkdir()
+    link = root / _LINK
+    real_islink, real_readlink = os.path.islink, os.readlink
+    monkeypatch.setattr(shell.os.path, "islink",
+                        lambda p: str(p) == str(link) or real_islink(p))
+    monkeypatch.setattr(shell.os, "readlink",
+                        lambda p: target if str(p) == str(link) else real_readlink(p))
+    _no_resolve_through_the_link(monkeypatch)
+    assert shell.confined(f"{_LINK}/notes.txt", str(root)) is None
+    assert shell.confined(str(link / "notes.txt"), str(root)) is None
+    assert shell.confined("notes.txt", str(link)) is None  # the root itself
+    assert shell.confined("ok.txt", str(root)) == (root / "ok.txt").resolve()
+
+
+def test_link_chain_ending_at_a_network_target_is_refused(tmp_path, monkeypatch):
+    root = tmp_path / "proj"
+    root.mkdir()
+    first, second = root / _LINK, root / f"{_LINK}-2"
+    targets = {str(first): f"{_LINK}-2", str(second): _NET_TARGET}
+    real_islink, real_readlink = os.path.islink, os.readlink
+    monkeypatch.setattr(shell.os.path, "islink",
+                        lambda p: str(p) in targets or real_islink(p))
+    monkeypatch.setattr(shell.os, "readlink",
+                        lambda p: targets.get(str(p)) or real_readlink(p))
+    _no_resolve_through_the_link(monkeypatch)
+    assert shell.confined(f"{_LINK}/notes.txt", str(root)) is None
+
+
+def test_real_symlink_to_a_network_target_is_never_followed(tmp_path, monkeypatch):
+    root = tmp_path / "proj"
+    root.mkdir()
+    try:
+        os.symlink(_NET_TARGET, root / _LINK, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot create symlinks")
+    _no_resolve_through_the_link(monkeypatch)
+    assert shell.confined(f"{_LINK}/notes.txt", str(root)) is None
+
+
+def test_local_symlink_inside_the_project_still_resolves(tmp_path):
+    root = tmp_path / "proj"
+    (root / "real").mkdir(parents=True)
+    try:
+        os.symlink(root / "real", root / "alias", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot create symlinks")
+    assert shell.confined("alias/x.txt", str(root)) == (root / "real" / "x.txt").resolve()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX automount folders")
+@pytest.mark.parametrize("path", ["/net/host.invalid/x", "/Network/Servers/h/x", "/net"])
+def test_posix_automount_paths_are_refused_lexically(tmp_path, monkeypatch, path):
+    def resolve(self, *args, **kwargs):
+        raise AssertionError("resolve() called for an automount path")
+    real = Path.resolve
+    monkeypatch.setattr(Path, "resolve",
+                        lambda self, *a, **k: resolve(self) if str(self).startswith(("/net", "/Network"))
+                        else real(self, *a, **k))
+    assert shell.confined(path, str(tmp_path)) is None

@@ -268,23 +268,86 @@ def is_remote_path(path) -> bool:
     return text.startswith("\\\\") or text.startswith("\\??\\")
 
 
+_AUTOMOUNT = ("/net", "/Network")  # POSIX folders where a path names a remote host
+MAX_LINK_HOPS = 40
+_LOCAL_DRIVE = re.compile(r"[A-Za-z]:\\")
+
+
+def _remote_form(path) -> bool:
+    """is_remote_path, plus the POSIX automount folders (/net/<host>, /Network/...)."""
+    if is_remote_path(path):
+        return True
+    if os.name == "nt":
+        return False
+    text = str(path)
+    return any(text == top or text.startswith(top + "/") for top in _AUTOMOUNT)
+
+
+def _links_reach_network(path: Path) -> bool:
+    """A link on the way to `path` (or a link it leads to) names a remote path.
+
+    Walks the path one part at a time with lstat and readlink only, splicing
+    each link's target in, so no link is followed before its target is read.
+    A link that cannot be read, or too many links, counts as remote.
+    """
+    pending = list(Path(os.path.abspath(path)).parts)
+    if not pending:
+        return False
+    current = Path(pending.pop(0))
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent  # `current` holds no link, so this is exact
+            continue
+        step = current / part
+        try:
+            if not os.path.islink(step):
+                current = step
+                continue
+            target = os.readlink(step)
+        except (OSError, ValueError):
+            return True
+        # Windows returns a local target as \\?\C:\...; \\?\UNC\host\... stays remote.
+        if target[:4] in ("\\\\?\\", "\\??\\") and _LOCAL_DRIVE.match(target[4:]):
+            target = target[4:]
+        hops += 1
+        if hops > MAX_LINK_HOPS or _remote_form(target):
+            return True
+        target_path = Path(target) if os.path.isabs(target) else current / target
+        if _remote_form(target_path):
+            return True
+        parts = list(target_path.parts)
+        current, pending = Path(parts[0]), parts[1:] + pending
+    return False
+
+
 def confined(path, root) -> Path | None:
     """`path` resolved (symlinks followed) when it lands inside `root`, else None.
 
     Both come from the transcript, so both are untrusted. Network and device
-    paths are refused before anything touches them; a relative path is joined
+    paths (and on POSIX /net/... and /Network/...), and links on the way whose
+    target is one, are refused before anything follows them; a relative path is joined
     to `root`; `..` parts and symlinks that lead outside `root` are refused.
     Every disk or git check of a path named in a transcript goes through here.
     """
-    if not path or not root or is_remote_path(path) or is_remote_path(root):
+    if not path or not root or _remote_form(path) or _remote_form(root):
         return None
     try:
-        base = Path(os.path.normpath(windows_drive(str(root)))).resolve()
+        base = Path(os.path.normpath(windows_drive(str(root))))
+        if _links_reach_network(base):
+            return None
+        base = base.resolve()
         full = Path(windows_drive(str(path).strip().strip("\"'")))
         full = full if full.is_absolute() else base / full
-        if is_remote_path(full):
+        full = Path(os.path.normpath(full))
+        # Links are read, never followed, until every one on the way is known to
+        # stay local: resolve() would touch a link's network target first.
+        if _remote_form(full) or _links_reach_network(full):
             return None
-        resolved = Path(os.path.normpath(full)).resolve()
+        resolved = full.resolve()
     except (OSError, ValueError, RuntimeError):
         return None
     if is_remote_path(resolved):
