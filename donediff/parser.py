@@ -176,8 +176,14 @@ def background_done(text: str) -> tuple[list[str], int] | None:
     status = found["status"].lower()
     if status not in ("completed", "failed"):
         return None
-    match = _NOTICE_EXIT.search(head)
-    code = log_int(match.group(1), 1) if match else (0 if status == "completed" else 1)
+    # The summary can quote the agent's own Bash description before the real
+    # code ("Run tests (exit code 0)" failed with exit code 1): printed text
+    # may only add a failure (SEC-232). Any non-zero code wins, and a failed
+    # notice never yields 0.
+    codes = [log_int(c, 1) for c in _NOTICE_EXIT.findall(head)]  # overlong: a failure (SEC-228)
+    code = next((c for c in codes if c), 0)
+    if status == "failed" and code == 0:
+        code = 1
     return [i for i in (found["tool-use-id"], found["task-id"]) if i], code
 
 
