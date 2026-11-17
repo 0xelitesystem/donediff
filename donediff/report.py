@@ -249,13 +249,67 @@ def render_json(result: AuditResult, full_paths: bool = False) -> str:
     }, indent=2)
 
 
+_PIPE_RUN = re.compile(r"(\\*)\|")
+_TICKS = re.compile(r"`+")
+
+
+def _inert(text: str) -> str:
+    """Markdown text outside code spans: no raw HTML or autolink (< and > as
+    entities) and no inline link or image (the ( after ] as an entity, which
+    CommonMark never reads as structure)."""
+    return text.replace("<", "&lt;").replace(">", "&gt;").replace("](", "]&#40;")
+
+
+def _md(text: str, cell: bool = False) -> str:
+    """Log text made inert in a Markdown list item, or a table cell (SEC-238).
+
+    Control codes are escaped. Code spans are found the CommonMark way (a
+    backtick run closes at the next run of the same length) and kept as they
+    are, since nothing inside one is active; the text between them goes
+    through _inert. In a cell every | is escaped, with the backslashes
+    before it, because the table is split before inline parsing.
+    """
+    text = _safe(text)
+    out: list[str] = []
+    pos = 0
+    while True:
+        opener = _TICKS.search(text, pos)
+        closer = None
+        while opener is not None:
+            closer = next((m for m in _TICKS.finditer(text, opener.end())
+                           if len(m.group()) == len(opener.group())), None)
+            if closer is not None:
+                break
+            opener = _TICKS.search(text, opener.end())  # unmatched: literal
+        if opener is None:
+            out.append(_inert(text[pos:]))
+            break
+        out.append(_inert(text[pos:opener.start()]))
+        out.append(text[opener.start():closer.end()])
+        pos = closer.end()
+    text = "".join(out)
+    if cell:
+        text = _PIPE_RUN.sub(lambda m: "\\" * (2 * len(m.group(1)) + 1) + "|", text)
+    return text
+
+
+def _code(text: str) -> str:
+    """Text as one inline code span, fenced longer than any backtick run in it,
+    so a backtick from the log cannot close the span (SEC-238)."""
+    text = _safe(text)
+    longest = max((len(r) for r in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
 def render_markdown(result: AuditResult, full_paths: bool = False) -> str:
     """The Markdown report; home folders show as ~ unless full_paths, as in JSON."""
     lines = [
         "# donediff audit",
         "",
-        f"- **Transcript:** `{_safe(Path(result.session.path).name)}`",
-        f"- **Project:** `{_safe(_shown(result.session.cwd, full_paths) or 'unknown')}`",
+        f"- **Transcript:** {_code(Path(result.session.path).name)}",
+        f"- **Project:** {_code(_shown(result.session.cwd, full_paths) or 'unknown')}",
         f"- **Score:** {result.score if result.score is not None else 'n/a'}"
         f"/100 ({result.grade})",
         f"- **Scope:** {_safe(scope_line(result.session))}",
@@ -267,8 +321,8 @@ def render_markdown(result: AuditResult, full_paths: bool = False) -> str:
     ]
     for finding in result.findings:
         _, symbol, label = _VERDICT_STYLE[finding.verdict]
-        quote = _safe(_shown(finding.claim.quote, full_paths)).replace("|", "\\|")
-        evidence = _safe(_shown(finding.evidence, full_paths)).replace("|", "\\|")
+        quote = _md(_shown(finding.claim.quote, full_paths), cell=True)
+        evidence = _md(_shown(finding.evidence, full_paths), cell=True)
         lines.append(f"| {symbol} {label} | {quote} | {evidence} |")
     if result.gaming_signals:
         lines += ["", "## Gaming signals", ""]
@@ -276,7 +330,7 @@ def render_markdown(result: AuditResult, full_paths: bool = False) -> str:
             if signal is None:
                 lines.append(f"- ... and {more} more of this kind (all in the JSON report)")
                 continue
-            text = _safe(_shown(_signal_text(signal), full_paths))
+            text = _md(_shown(_signal_text(signal), full_paths))
             lines.append(f"- **{signal.severity.value.upper()}**: {text}")
     lines.append("")
     return "\n".join(lines)
