@@ -15,15 +15,20 @@ from .redact import redact_secrets
 # Control characters that a terminal would act on instead of showing:
 # every C0 (newline and tab too: each rendered field is one line, so a
 # newline in a file name or cwd from the log cannot forge a report line,
-# SEC-237), DEL, C1, and bidi overrides/isolates.
+# SEC-237), DEL, C1, and bidi overrides/isolates; and characters that hide
+# text (SEC-245): soft hyphen, zero-width and invisible fillers, line and
+# paragraph separators, invisible operators, the BOM and tag characters.
 _UNSAFE_CHARS = re.compile(
-    r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]"
+    r"[\x00-\x1f\x7f-\x9f\xad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e"
+    r"\u2060-\u206f\u3164\ufeff\uffa0\U000e0000-\U000e007f]"
 )
 
 
 def _escape_char(match: re.Match) -> str:
     code = ord(match.group())
-    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code < 0x10000 else f"\\U{code:08x}"
 
 
 def _safe(text: str) -> str:

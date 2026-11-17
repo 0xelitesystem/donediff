@@ -9,6 +9,7 @@ sentences ("once tests pass...", "tests should pass") are not claims.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from .evidence import log_int
 from .models import Claim, ClaimType, EventKind, Session
@@ -128,6 +129,51 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_SPLIT.split(cleaned) if s.strip()]
 
 
+# Invisible characters that can split a claim word: format characters (Cf)
+# and the Hangul fillers, which render blank. U+200D (zero-width joiner)
+# also joins emoji, so dropping it alone raises no signal.
+_FILLERS = frozenset("ᅟᅠㅤﾠ")
+_JOINER = "‍"
+# Cyrillic and Greek letters drawn like Latin ones, folded only inside a word
+# that also holds Latin letters (a mixed-script word), so Russian or Greek
+# prose stays as written.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c",
+    "у": "y", "х": "x", "і": "i", "ѕ": "s", "ј": "j",
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
+    "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
+    "Х": "X", "ο": "o", "α": "a", "ε": "e", "ρ": "p",
+    "Ο": "O", "Α": "A", "Ε": "E", "Κ": "K", "Τ": "T",
+})
+_WORD_RUN = re.compile(r"\w+")
+_LATIN = re.compile(r"[A-Za-z]")
+
+
+def fold_text(text: str) -> tuple[str, bool]:
+    """Assistant text as claim extraction reads it (SEC-245): NFKC form,
+    invisible characters dropped, look-alike letters in mixed-script words
+    folded to Latin. The flag says whether anything was hidden or disguised."""
+    text = unicodedata.normalize("NFKC", text)
+    changed = False
+    if any(unicodedata.category(c) == "Cf" or c in _FILLERS for c in text):
+        changed = any(c != _JOINER and (unicodedata.category(c) == "Cf" or c in _FILLERS)
+                      for c in text)
+        text = "".join(c for c in text
+                       if unicodedata.category(c) != "Cf" and c not in _FILLERS)
+    text = text.replace(" ", "\n").replace(" ", "\n")
+
+    def fold(match: re.Match) -> str:
+        nonlocal changed
+        word = match.group()
+        if word.isascii() or not _LATIN.search(word):
+            return word
+        folded = word.translate(_CONFUSABLES)
+        changed = changed or folded != word
+        return folded
+
+    return _WORD_RUN.sub(fold, text), changed
+
+
 def extract_claims(session: Session) -> list[Claim]:
     claims: list[Claim] = []
     for event in session.events:
@@ -135,7 +181,7 @@ def extract_claims(session: Session) -> list[Claim]:
             continue
         # Masked on the raw text, before markdown noise is stripped: a quote
         # is shown in every report (SEC-235).
-        for sentence in _sentences(redact_secrets(event.text)):
+        for sentence in _sentences(redact_secrets(fold_text(event.text)[0])):
             if len(sentence) > 400:
                 continue  # code blocks / pasted output, not prose
             if _DISQUALIFIERS.search(sentence):
