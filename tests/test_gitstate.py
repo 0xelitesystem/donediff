@@ -593,6 +593,33 @@ def test_filter_overrides_also_travel_in_the_environment(tmp_path, monkeypatch):
     assert pairs["filter.evil.required"] == "false"
 
 
+def _plant_git(folder: Path) -> Path:
+    """A fake git (it only exits 1) where a hostile clone could ship one."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fake = folder / ("git.exe" if os.name == "nt" else "git")
+    fake.write_bytes(b"" if os.name == "nt" else b"#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    return fake
+
+
+@needs_git
+def test_git_is_never_taken_from_the_current_folder_or_the_project(tmp_path, monkeypatch):
+    """SEC-224: shutil.which("git") searched the current folder first on Windows, so a
+    git.exe shipped in a clone ran when donediff was started there. Relative PATH entries,
+    the current folder and folders inside the audited project are never searched."""
+    repo = make_repo(tmp_path)
+    cwd = tmp_path / "cloned"
+    planted = [_plant_git(cwd), _plant_git(repo), _plant_git(repo / "bin")]
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        [".", "bin", str(cwd), str(repo), str(repo / "bin"), os.environ.get("PATH", "")]))
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found._git and Path(found._git).resolve() not in {p.resolve() for p in planted}
+        assert found.available, found.reason
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(cwd), str(repo / "bin")]))
+    assert gitstate.GitRepo(str(repo)).reason == "git not found"
+
+
 @needs_git
 def test_cli_reads_git_with_the_disk_check_on(tmp_path, capsys):
     import json
