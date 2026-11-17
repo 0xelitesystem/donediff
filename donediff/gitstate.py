@@ -10,7 +10,8 @@ and attributes may have been written to run code. So every call:
 - turns off what config could make a read run a program: fsmonitor,
   hooks (pointed at an empty folder), external diff, signature checks
   (gpg), every clean/smudge/process filter the repository names, and
-  every network transport (`protocol.allow=never`, no lazy fetch);
+  every network transport (`protocol.allow=never`, an empty
+  GIT_ALLOW_PROTOCOL, no lazy fetch);
   filter overrides also go through GIT_CONFIG_COUNT, and a filter name
   that cannot be overridden (one with "=") makes the repository refused;
 - runs a read-only command: rev-parse, config --get-regexp, log,
@@ -69,6 +70,10 @@ def _environment() -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_LAZY_FETCH": "1",
+        # Beats every protocol.<name>.allow in the repository config (git 2.6+);
+        # protocol.allow=never alone loses to a repository's protocol.ext.allow=always,
+        # and git older than 2.44 ignores GIT_NO_LAZY_FETCH.
+        "GIT_ALLOW_PROTOCOL": "",
         "GIT_PAGER": "cat",
         "PAGER": "cat",
         "GIT_EDITOR": ":",

@@ -594,6 +594,56 @@ def test_hostile_repository_never_runs_its_code(tmp_path):
 
 
 @needs_git
+def test_repository_allowed_ext_transport_never_runs_on_old_git(tmp_path, monkeypatch):
+    """SEC-226: a repository's protocol.ext.allow=always beats -c protocol.allow=never.
+    Git older than 2.44 ignores GIT_NO_LAZY_FETCH, so a partial-clone lazy fetch ran the
+    repository's ext:: command. Old git is simulated by dropping GIT_NO_LAZY_FETCH."""
+    marker = tmp_path / "lazy-fetch.txt"
+    if " " in marker.as_posix():
+        pytest.skip("the ext:: command in this setup cannot quote a path with a space")
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/a.py", "Add a")
+    tree = git(repo, "rev-parse", "HEAD^{tree}")
+
+    def arm():
+        for key, value in (("core.repositoryformatversion", "1"),
+                           ("extensions.partialClone", "origin"),
+                           ("remote.origin.promisor", "true"),
+                           ("protocol.ext.allow", "always"),
+                           ("remote.origin.url",
+                            f"ext::sh -c echo% lazy>>{marker.as_posix()}% ;false")):
+            git(repo, "config", key, value)
+        obj = repo / ".git" / "objects" / tree[:2] / tree[2:]
+        if obj.exists():
+            obj.chmod(0o666)
+            obj.unlink()
+
+    arm()
+    # Control: git with only protocol.allow=never and no GIT_NO_LAZY_FETCH runs it.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    subprocess.run(["git", "-C", str(repo), "-c", "protocol.allow=never", "show",
+                    "--name-only", "--format=", sha], capture_output=True, env=env, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git does not lazy-fetch through ext:: here")
+    marker.unlink()
+
+    real = gitstate._environment
+
+    def old_git_environment():
+        env = real()
+        env.pop("GIT_NO_LAZY_FETCH", None)
+        return env
+    monkeypatch.setattr(gitstate, "_environment", old_git_environment)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        try:
+            found.files_in(gitstate.Commit(sha, 0.0, "Add a"))
+        except gitstate.GitError:
+            pass  # the tree is gone; what matters is that nothing ran
+    assert not marker.exists()
+
+
+@needs_git
 def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
     """SEC-191: `-c filter.a=b.clean=` is split by git at the first "=", so the filter
     stays live. The repository is refused before any later git call."""
