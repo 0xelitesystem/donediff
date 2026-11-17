@@ -127,6 +127,15 @@ def _unquote_alternate(line: str) -> str:
                   else {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), body)
 
 
+def _looks_like_git_dir(folder: Path) -> bool:
+    """A folder git would take as a git directory: HEAD plus objects/ or commondir."""
+    try:
+        return os.path.isfile(folder / "HEAD") and (os.path.isdir(folder / "objects")
+                                                   or os.path.isfile(folder / "commondir"))
+    except (OSError, ValueError):
+        return False
+
+
 def _refuse_network_repository(project: Path, read_config) -> None:
     """Refuse a repository whose files point git at a network or device path.
 
@@ -140,8 +149,17 @@ def _refuse_network_repository(project: Path, read_config) -> None:
     outside the repository), so every way git spells a value is seen;
     includes are followed here. Git is not run on the repository on a hit.
     """
-    dotgit = next((d / ".git" for d in (project, *project.parents)
-                   if os.path.lexists(d / ".git")), None)
+    dotgit = None
+    for d in (project, *project.parents):
+        if os.path.lexists(d / ".git"):
+            dotgit = d / ".git"
+            break
+        # Git also opens a folder that IS a git directory as a bare repository, and a
+        # clone can ship one as ordinary tracked files. Its config and alternates are
+        # not the ones checked here, so it is refused (git is also run with
+        # safe.bareRepository=explicit).
+        if _looks_like_git_dir(d):
+            raise GitError("project folder is inside a bare repository")
     if dotgit is None:
         return  # git will say it is not a work tree
     gitdirs = [_local_target(dotgit)]
@@ -247,6 +265,7 @@ def _hardening_args(hooks: str) -> list[str]:
         "-c", "diff.external=",
         "-c", "log.showSignature=false",
         "-c", "protocol.allow=never",
+        "-c", "safe.bareRepository=explicit",
     ]
 
 

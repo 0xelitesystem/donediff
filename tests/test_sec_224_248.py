@@ -119,3 +119,53 @@ def test_relative_and_network_path_entries_are_skipped(tmp_path, monkeypatch):
     _plant(tmp_path, "git.exe" if os.name == "nt" else "git")
     monkeypatch.setenv("PATH", os.pathsep.join([".", "", "\\\\host.invalid\\share\\bin"]))
     assert gitstate.find_git() == ""
+
+
+# -- SEC-225: an embedded bare repository (tracked files shaped like a git dir) ----
+
+def _refuse_repo_popen(monkeypatch) -> None:
+    """Fail on any git call on the repository (config --file parses outside it are fine)."""
+    real = subprocess.Popen
+
+    def refuse(argv, **kwargs):
+        if "-C" in argv:
+            raise AssertionError("git started on a bare repository inside the project")
+        return real(argv, **kwargs)
+    monkeypatch.setattr(gitstate.subprocess, "Popen", refuse)
+
+
+@needs_git
+@pytest.mark.parametrize("shape", ["objects", "commondir"])
+def test_project_inside_an_embedded_bare_repository_is_refused(tmp_path, monkeypatch, shape):
+    clone = make_repo(tmp_path)
+    emb = clone / "vendor" / "tool"
+    if shape == "objects":
+        (emb / "objects" / "info").mkdir(parents=True)
+        (emb / "refs" / "heads").mkdir(parents=True)
+        (emb / "objects" / "info" / "alternates").write_text(
+            "//host.invalid/share/objects\n", encoding="utf-8")
+    else:
+        emb.mkdir(parents=True)
+        (emb / "commondir").write_text("../../.git\n", encoding="utf-8")
+    (emb / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (emb / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+    inner = emb / "refs"
+    inner.mkdir(exist_ok=True)
+    _refuse_repo_popen(monkeypatch)
+    for project in (emb, inner):  # the bare folder itself and a folder inside it
+        found = gitstate.GitRepo(str(project))
+        assert found.reason == "project folder is inside a bare repository"
+        with pytest.raises(gitstate.GitError):
+            found.status()
+
+
+@needs_git
+def test_every_git_call_refuses_implicit_bare_repositories(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    calls = _spy_popen(monkeypatch)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        found.status()
+    assert calls
+    for argv in calls:
+        assert "safe.bareRepository=explicit" in argv, argv
