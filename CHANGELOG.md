@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.2
+
+### Security
+
+Upgrade if you run donediff with the disk check on (the default) in a
+folder you did not create, such as a cloned repository. In 0.4.1 and
+earlier, a repository built to attack it could:
+
+- On Windows, run a program named `git.exe` placed in the folder donediff
+  was started from, instead of your installed git. donediff now starts only
+  a git found in the absolute folders on your PATH.
+- Make git read objects from a network share named by a bare repository
+  hidden among the project's files. On Windows, that connection can send
+  your Windows sign-in (NTLM) to that host. donediff now refuses a project
+  inside a bare repository.
+- With git older than 2.44, run a command named in the repository's own
+  config through a lazy fetch, despite donediff's network setting. donediff
+  now turns off every git transport with a setting the repository's config
+  cannot override.
+- Through a crafted commit message, pass git an option that writes a file
+  anywhere you can write, or list a commit that does not exist as one made
+  during the session. donediff now reads git's log with NUL separators,
+  accepts only full commit ids, and passes no value read from the
+  repository to git as an option.
+- On git 2.50 or newer, config-defined hooks were not turned off (no
+  command donediff runs fires one). donediff now turns them off by name.
+
+## 0.4.1
+
+### Fixed
+
+- A command whose result never reached the transcript (the session was cut off
+  or the run was killed) was marked VERIFIED as "succeeded (exit 0)". It is now
+  UNVERIFIED with the reason "no result for this run in the log", so it lowers
+  the score and counts against `--fail-under`. Runs that have a result keep
+  their verdicts.
+
 ## 0.4.0
 
 donediff now reads the project's git state.

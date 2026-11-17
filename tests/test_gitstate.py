@@ -4,6 +4,7 @@ the fallback when git cannot be read, and a repository built to attack us."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -389,6 +390,57 @@ def test_network_path_forms_git_reads_are_refused(tmp_path, monkeypatch, form):
         assert parsed.is_relative_to(dotgit.resolve()), parsed
 
 
+def _git_version() -> tuple[int, ...]:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    return tuple(int(n) for n in re.findall(r"\d+", out)[:3])
+
+
+def _embedded_bare(tmp_path: Path, alternates: str) -> Path:
+    """SEC-225 setup: tracked files in a clone shaped like a git directory, config
+    claiming a work tree, alternates pointing elsewhere."""
+    clone = make_repo(tmp_path)
+    sha = commit_file(clone, "src/a.py", "Add a")
+    emb = clone / "vendor" / "tool"
+    git(tmp_path, "init", "-q", "--bare", str(emb))
+    (emb / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    (emb / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (emb / "config").write_text("[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+                                f"\tworktree = {emb.as_posix()}\n", encoding="utf-8")
+    (emb / "objects" / "info" / "alternates").write_text(alternates + "\n", encoding="utf-8")
+    return emb
+
+
+@needs_git
+@pytest.mark.parametrize("alternates", ["network", "local"])
+def test_project_inside_an_embedded_bare_repository_is_refused(tmp_path, monkeypatch,
+                                                                alternates):
+    """SEC-225: the pre-check looked only for `.git`, while git took the embedded folder
+    as a bare repository and read its alternates (over SMB on Windows)."""
+    target = ("\\\\host.invalid\\share\\objects" if alternates == "network"
+              else (tmp_path / "proj" / ".git" / "objects").as_posix())
+    emb = _embedded_bare(tmp_path, target)
+    _refuse_popen(monkeypatch)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "project folder is inside a bare repository"
+    finding = one(audit(tmp_path, emb, commit_records("Add a")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert "git state not checked (project folder is inside a bare repository)" \
+        in finding.evidence
+
+
+@needs_git
+@pytest.mark.skipif(shutil.which("git") is None or _git_version() < (2, 38),
+                    reason="safe.bareRepository needs git 2.38+")
+def test_git_itself_refuses_an_implicit_bare_repository(tmp_path, monkeypatch):
+    """SEC-225, second layer: with the pre-check out of the way, git is run with
+    safe.bareRepository=explicit and does not open the embedded folder."""
+    emb = _embedded_bare(tmp_path, (tmp_path / "proj" / ".git" / "objects").as_posix())
+    monkeypatch.setattr(gitstate, "_refuse_network_repository", lambda *a: None)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "not a git work tree"
+
+
 @needs_git
 def test_alternates_loop_is_refused(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
@@ -542,6 +594,119 @@ def test_hostile_repository_never_runs_its_code(tmp_path):
 
 
 @needs_git
+def test_repository_allowed_ext_transport_never_runs_on_old_git(tmp_path, monkeypatch):
+    """SEC-226: a repository's protocol.ext.allow=always beats -c protocol.allow=never.
+    Git older than 2.44 ignores GIT_NO_LAZY_FETCH, so a partial-clone lazy fetch ran the
+    repository's ext:: command. Old git is simulated by dropping GIT_NO_LAZY_FETCH."""
+    marker = tmp_path / "lazy-fetch.txt"
+    if " " in marker.as_posix():
+        pytest.skip("the ext:: command in this setup cannot quote a path with a space")
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/a.py", "Add a")
+    tree = git(repo, "rev-parse", "HEAD^{tree}")
+
+    def arm():
+        for key, value in (("core.repositoryformatversion", "1"),
+                           ("extensions.partialClone", "origin"),
+                           ("remote.origin.promisor", "true"),
+                           ("protocol.ext.allow", "always"),
+                           ("remote.origin.url",
+                            f"ext::sh -c echo% lazy>>{marker.as_posix()}% ;false")):
+            git(repo, "config", key, value)
+        obj = repo / ".git" / "objects" / tree[:2] / tree[2:]
+        if obj.exists():
+            obj.chmod(0o666)
+            obj.unlink()
+
+    arm()
+    # Control: git with only protocol.allow=never and no GIT_NO_LAZY_FETCH runs it.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    subprocess.run(["git", "-C", str(repo), "-c", "protocol.allow=never", "show",
+                    "--name-only", "--format=", sha], capture_output=True, env=env, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git does not lazy-fetch through ext:: here")
+    marker.unlink()
+
+    real = gitstate._environment
+
+    def old_git_environment():
+        env = real()
+        env.pop("GIT_NO_LAZY_FETCH", None)
+        return env
+    monkeypatch.setattr(gitstate, "_environment", old_git_environment)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        try:
+            found.files_in(gitstate.Commit(sha, 0.0, "Add a"))
+        except gitstate.GitError:
+            pass  # the tree is gone; what matters is that nothing ran
+    assert not marker.exists()
+
+
+_SESSION_EPOCH = 1781092800  # IN_SESSION as seconds
+
+
+@needs_git
+@pytest.mark.parametrize("separator", ["\u2028", "\x1c", "\x85", "\r"],
+                         ids=["u2028", "x1c", "x85", "cr"])
+def test_commit_subject_cannot_forge_a_log_record(tmp_path, separator):
+    """SEC-227: str.splitlines() also splits on these, so a subject forged a second log
+    record whose "sha" went unchecked into `git show ... <sha>`, where git took it as an
+    option (--output=<path> writes a file)."""
+    repo = make_repo(tmp_path)
+    real = commit_file(repo, "src/a.py", "Add a")
+    target = tmp_path / "written-by-git.txt"
+    message = (f"tidy{separator}--output={target.as_posix()}\x1f{_SESSION_EPOCH}\x1fforged")
+    (repo / "z.py").write_text("z = 1\n", encoding="utf-8")
+    git(repo, "add", "z.py")
+    tree = git(repo, "write-tree")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+               GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid",
+               GIT_AUTHOR_DATE=IN_SESSION, GIT_COMMITTER_DATE=IN_SESSION,
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    forged = subprocess.run(["git", "-C", str(repo), "commit-tree", tree, "-p", "HEAD",
+                             "-F", "-"], input=message.encode("utf-8"), capture_output=True,
+                            check=True, env=env).stdout.decode().strip()
+    git(repo, "update-ref", "refs/heads/main", forged)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        commits = found.commits_between(_SESSION_EPOCH - 60, _SESSION_EPOCH + 60)
+        assert sorted(c.sha for c in commits) == sorted([real, forged])
+        for commit in commits:
+            found.files_in(commit)
+    assert not target.exists()
+
+
+@needs_git
+def test_ids_from_outside_never_reach_git_as_options(tmp_path, monkeypatch):
+    """SEC-227: a sha that is not hex is never run, and every id that does reach git
+    sits after --end-of-options or in an attached --contains=<id>."""
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/a.py", "Add a")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    calls = []
+    real = subprocess.Popen
+
+    def spy(argv, **kwargs):
+        calls.append(list(argv))
+        return real(argv, **kwargs)
+
+    with gitstate.GitRepo(str(repo)) as found:
+        monkeypatch.setattr(gitstate.subprocess, "Popen", spy)
+        assert found.files_in(gitstate.Commit("--output=x", 0.0, "forged")) == set()
+        assert calls == []
+        assert found.files_in(gitstate.Commit(sha, 0.0, "Add a")) == {"src/a.py"}
+        assert found.has_commit(sha[:8])
+        assert found.remote_branches_containing(sha) == ["origin/main"]
+        assert found.remote_refs() == ["origin/main"]
+    show, cat_file, contains = calls[0], calls[1], calls[2]
+    assert show[-2:] == ["--end-of-options", sha]
+    assert cat_file[-2:] == ["--end-of-options", f"{sha[:8]}^{{commit}}"]
+    assert contains[-1] == f"--contains={sha}"
+
+
+@needs_git
 def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
     """SEC-191: `-c filter.a=b.clean=` is split by git at the first "=", so the filter
     stays live. The repository is refused before any later git call."""
@@ -572,6 +737,49 @@ def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
 
 
 @needs_git
+@pytest.mark.skipif(shutil.which("git") is None or _git_version() < (2, 50),
+                    reason="config-defined hooks need git 2.50+")
+def test_config_defined_hooks_are_turned_off_by_name(tmp_path):
+    """SEC-248: `hook.<name>.command` hooks (git 2.50+) are not reached by an empty
+    core.hooksPath. Each is turned off by name on every call. No donediff command writes
+    the index, so the proof runs status with donediff's argv but with optional locks on,
+    which lets git write the index and fire post-index-change."""
+    repo = make_repo(tmp_path)
+    marker = tmp_path / "marker.txt"
+    run = f"sh '{_evil_script(tmp_path, marker).as_posix()}' </dev/null"
+    git(repo, "config", "hook.ev.command", run)
+    git(repo, "config", "hook.ev.event", "post-index-change")
+    git(repo, "config", "hook.a.b.command", run)
+    git(repo, "config", "hook.a.b.event", "post-index-change")
+    index = (repo / ".git" / "index").read_bytes()
+
+    def dirty():
+        (repo / ".git" / "index").write_bytes(index)
+        stat = (repo / "README.md").stat()
+        os.utime(repo / "README.md", (stat.st_atime + 100, stat.st_mtime + 100))
+
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    dirty()
+    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                   capture_output=True, env=env, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git did not fire the config-defined hook under plain status")
+    marker.unlink()
+
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        dirty()
+        env = gitstate._environment()
+        env.update(found._filter_environment())
+        del env["GIT_OPTIONAL_LOCKS"]
+        subprocess.run([found._git, "-C", found.project, "--no-pager",
+                        *found._config_args(), "status", "--porcelain"],
+                       capture_output=True, env=env, timeout=60)
+        assert not marker.exists()
+        assert found._config_hooks == ["a.b", "ev"]
+
+
+@needs_git
 def test_filter_overrides_also_travel_in_the_environment(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     git(repo, "config", "filter.evil.clean", "false")
@@ -591,6 +799,33 @@ def test_filter_overrides_also_travel_in_the_environment(tmp_path, monkeypatch):
              for i in range(int(env["GIT_CONFIG_COUNT"]))}
     assert pairs["filter.evil.clean"] == "" and pairs["filter.evil.process"] == ""
     assert pairs["filter.evil.required"] == "false"
+
+
+def _plant_git(folder: Path) -> Path:
+    """A fake git (it only exits 1) where a hostile clone could ship one."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fake = folder / ("git.exe" if os.name == "nt" else "git")
+    fake.write_bytes(b"" if os.name == "nt" else b"#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    return fake
+
+
+@needs_git
+def test_git_is_never_taken_from_the_current_folder_or_the_project(tmp_path, monkeypatch):
+    """SEC-224: shutil.which("git") searched the current folder first on Windows, so a
+    git.exe shipped in a clone ran when donediff was started there. Relative PATH entries,
+    the current folder and folders inside the audited project are never searched."""
+    repo = make_repo(tmp_path)
+    cwd = tmp_path / "cloned"
+    planted = [_plant_git(cwd), _plant_git(repo), _plant_git(repo / "bin")]
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        [".", "bin", str(cwd), str(repo), str(repo / "bin"), os.environ.get("PATH", "")]))
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found._git and Path(found._git).resolve() not in {p.resolve() for p in planted}
+        assert found.available, found.reason
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(cwd), str(repo / "bin")]))
+    assert gitstate.GitRepo(str(repo)).reason == "git not found"
 
 
 @needs_git

@@ -4,11 +4,15 @@ Used only when the disk check is on and the session's project directory
 is a git work tree. The repository is not trusted: its config, hooks
 and attributes may have been written to run code. So every call:
 
-- is an argv list, never a shell, with `git -C <dir> --no-pager`;
+- is an argv list, never a shell, with `git -C <dir> --no-pager`, where
+  git is found only in absolute PATH entries that are not the current
+  folder and not inside the project (never a git shipped in the repo);
 - turns off what config could make a read run a program: fsmonitor,
-  hooks (pointed at an empty folder), external diff, signature checks
+  hooks (pointed at an empty folder, and every config-defined hook
+  turned off by name), external diff, signature checks
   (gpg), every clean/smudge/process filter the repository names, and
-  every network transport (`protocol.allow=never`, no lazy fetch);
+  every network transport (`protocol.allow=never`, an empty
+  GIT_ALLOW_PROTOCOL, no lazy fetch);
   filter overrides also go through GIT_CONFIG_COUNT, and a filter name
   that cannot be overridden (one with "=") makes the repository refused;
 - runs a read-only command: rev-parse, config --get-regexp, log,
@@ -42,6 +46,7 @@ OUTPUT_CAP = 4 * 1024 * 1024  # bytes read from one call; more is an error
 MAX_COMMITS = 200  # session commits read with show --name-only
 
 _HEX_ID = re.compile(r"[0-9a-fA-F]{7,40}")
+_FULL_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # SHA-1 or SHA-256, as git log prints
 _MSYS_DRIVE = re.compile(r"^/([A-Za-z])(?=/|$)")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
@@ -67,6 +72,10 @@ def _environment() -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_LAZY_FETCH": "1",
+        # Beats every protocol.<name>.allow in the repository config (git 2.6+);
+        # protocol.allow=never alone loses to a repository's protocol.ext.allow=always,
+        # and git older than 2.44 ignores GIT_NO_LAZY_FETCH.
+        "GIT_ALLOW_PROTOCOL": "",
         "GIT_PAGER": "cat",
         "PAGER": "cat",
         "GIT_EDITOR": ":",
@@ -138,9 +147,18 @@ def _refuse_network_repository(project: Path, read_config) -> None:
     (`read_config`: `git config --file <f> --no-includes --list`, run
     outside the repository), so every way git spells a value is seen;
     includes are followed here. Git is not run on the repository on a hit.
+    A project inside a bare repository (a folder that is itself a git
+    directory, which a clone can ship as ordinary tracked files) is refused
+    outright: git would read its config and alternates, not the `.git`.
     """
-    dotgit = next((d / ".git" for d in (project, *project.parents)
-                   if os.path.lexists(d / ".git")), None)
+    dotgit = None
+    for d in (project, *project.parents):
+        if os.path.lexists(d / ".git"):
+            dotgit = d / ".git"
+            break
+        if os.path.isfile(d / "HEAD") and (os.path.isdir(d / "objects")
+                                           or os.path.isfile(d / "commondir")):
+            raise GitError("project folder is inside a bare repository")
     if dotgit is None:
         return  # git will say it is not a work tree
     gitdirs = [_local_target(dotgit)]
@@ -205,6 +223,50 @@ def _refuse_network_alternates(objects: Path) -> None:
             queue.append((_local_target(directory / _windows_path(entry)), chain))
 
 
+def _inside(path: str, folder: str) -> bool:
+    try:
+        Path(os.path.normcase(os.path.realpath(path))).relative_to(
+            os.path.normcase(os.path.realpath(folder)))
+        return True
+    except ValueError:
+        return False
+
+
+def find_git(project: str = "") -> str:
+    """The git executable from a trusted PATH entry, or "".
+
+    shutil.which("git") on Windows searches the current folder before PATH
+    (unless NoDefaultCurrentDirectoryInExePath is set), so a git.exe shipped
+    in a cloned repository would run when donediff is started from it. Here
+    only absolute, local PATH entries are searched, and an entry that is the
+    current folder, or lies inside the audited project or the work tree
+    holding it, is skipped. On Windows only git.exe is accepted: a .bat/.cmd
+    would run through cmd.exe.
+    """
+    try:
+        untrusted = [os.getcwd()]
+    except OSError:
+        untrusted = [os.devnull]
+    if project:
+        untrusted.append(project)
+        root = next((d for d in (Path(project), *Path(project).parents)
+                     if os.path.lexists(d / ".git")), None)
+        if root is not None:
+            untrusted.append(str(root))
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry) or is_remote_path(entry):
+            continue
+        if _same(os.path.realpath(entry), os.path.realpath(untrusted[0])) or \
+                any(_inside(entry, folder) for folder in untrusted[1:]):
+            continue
+        # A name with a folder part is looked up in that folder only.
+        found = shutil.which(os.path.join(entry, "git.exe" if os.name == "nt" else "git"))
+        if found:
+            return os.path.abspath(found)
+    return ""
+
+
 def _hardening_args(hooks: str) -> list[str]:
     """The -c settings every git call carries (filters are added per repository)."""
     return [
@@ -213,6 +275,8 @@ def _hardening_args(hooks: str) -> list[str]:
         "-c", "diff.external=",
         "-c", "log.showSignature=false",
         "-c", "protocol.allow=never",
+        # git never takes a folder as a bare repository unless told to (git 2.38+).
+        "-c", "safe.bareRepository=explicit",
     ]
 
 
@@ -299,6 +363,7 @@ class GitRepo:
         self._git = ""
         self._hooks: tempfile.TemporaryDirectory | None = None
         self._filters: list[str] = []
+        self._config_hooks: list[str] = []
         self._has_head = False
         self._commits: dict[tuple[int, int], list[Commit]] = {}
         self._files: dict[str, set[str]] = {}
@@ -336,7 +401,7 @@ class GitRepo:
         if not path.is_dir():
             raise GitError("project directory not found")
         self.project = str(path.resolve())
-        self._git = shutil.which("git") or ""
+        self._git = find_git(self.project)
         if not self._git:
             raise GitError("git not found")
         self._hooks = tempfile.TemporaryDirectory(prefix="donediff-nohooks-",
@@ -344,7 +409,7 @@ class GitRepo:
         _refuse_network_repository(Path(self.project), self._read_config_file)
         code, out = self._run(["rev-parse", "--is-inside-work-tree", "--show-toplevel"],
                               check=False)
-        lines = out.splitlines()
+        lines = out.split("\n")
         if code != 0 or not lines or lines[0].strip() != "true" or len(lines) < 2:
             raise GitError("not a git work tree")
         self.toplevel = str(Path(_windows_path(lines[1].strip())).resolve())
@@ -361,6 +426,18 @@ class GitRepo:
         if any("=" in name or "\n" in name or "\0" in name for name in names):
             raise GitError("repository names a filter that cannot be turned off")
         self._filters = sorted(names)
+        # Names of every config-defined hook (`hook.<name>.command`, git 2.50+): an empty
+        # core.hooksPath does not reach these, so each is turned off by name.
+        code, out = self._run(["config", "-z", "--name-only", "--get-regexp",
+                               r"^hook\..*\.command$"], check=False)
+        hooks = set()
+        for entry in out.split("\0"):
+            first, _, rest = entry.strip("\n").partition(".")
+            if first.lower() == "hook" and "." in rest:
+                hooks.add(rest.rsplit(".", 1)[0])
+        if any("=" in name or "\n" in name or "\0" in name for name in hooks):
+            raise GitError("repository names a hook that cannot be turned off")
+        self._config_hooks = sorted(hooks)
         code, _ = self._run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], check=False)
         self._has_head = code == 0
 
@@ -376,14 +453,17 @@ class GitRepo:
             for key in ("clean", "smudge", "process"):
                 args += ["-c", f"filter.{name}.{key}="]
             args += ["-c", f"filter.{name}.required=false"]
+        for name in self._config_hooks:
+            args += ["-c", f"hook.{name}.enabled=false"]
         return args
 
     def _filter_environment(self) -> dict[str, str]:
-        """The filter overrides again as GIT_CONFIG_COUNT/KEY/VALUE (git 2.31+):
+        """The filter and hook overrides again as GIT_CONFIG_COUNT/KEY/VALUE (git 2.31+):
         key and value travel apart, so no name can be split into another key."""
         pairs = [(f"filter.{name}.{key}", "") for name in self._filters
                  for key in ("clean", "smudge", "process")]
         pairs += [(f"filter.{name}.required", "false") for name in self._filters]
+        pairs += [(f"hook.{name}.enabled", "false") for name in self._config_hooks]
         env = {"GIT_CONFIG_COUNT": str(len(pairs))} if pairs else {}
         for i, (key, value) in enumerate(pairs):
             env[f"GIT_CONFIG_KEY_{i}"] = key
@@ -414,10 +494,14 @@ class GitRepo:
                 _, out = self._run(["log", "--branches", "HEAD", "--no-show-signature",
                                     "--date-order", f"--since=@{key[0]}",
                                     f"--until=@{key[1]}", f"--max-count={MAX_COMMITS}",
-                                    "--format=%H%x1f%ct%x1f%s"])
-                for line in out.splitlines():
-                    parts = line.split("\x1f", 2)
-                    if len(parts) == 3 and parts[1].isdigit() and \
+                                    "-z", "--format=%H%x1f%ct%x1f%s"])
+                # NUL between records: a subject can hold any other line separator
+                # (U+2028, x1c, x85, CR, ...), and a record it forged would carry an
+                # unchecked "sha" into a later argv.
+                for record in out.split("\0"):
+                    parts = record.split("\x1f", 2)
+                    if len(parts) == 3 and _FULL_SHA.fullmatch(parts[0]) and \
+                            parts[1].isascii() and parts[1].isdigit() and \
                             start <= float(parts[1]) <= end:
                         found.append(Commit(parts[0], float(parts[1]), parts[2]))
             self._commits[key] = found
@@ -425,11 +509,13 @@ class GitRepo:
 
     def files_in(self, commit: Commit) -> set[str]:
         """Paths (repository-relative, forward slashes) the commit changed."""
+        if not _FULL_SHA.fullmatch(commit.sha):
+            return set()
         if commit.sha not in self._files:
             _, out = self._run(["show", "--no-ext-diff", "--no-textconv",
                                 "--no-show-signature", "--no-renames",
                                 "--diff-merges=first-parent", "--name-only",
-                                "--format=", "-z", commit.sha])
+                                "--format=", "-z", "--end-of-options", commit.sha])
             self._files[commit.sha] = {p for p in out.split("\0") if p.strip()}
         return self._files[commit.sha]
 
@@ -463,22 +549,24 @@ class GitRepo:
 
     def remote_refs(self) -> list[str]:
         if self._remote_refs is None:
-            _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)"])
-            self._remote_refs = [r.strip() for r in out.splitlines() if r.strip()]
+            _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)%00"])
+            self._remote_refs = [r.strip() for r in out.split("\0") if r.strip()]
         return self._remote_refs
 
     def remote_branches_containing(self, sha: str) -> list[str]:
         """Remote-tracking branches (local refs, never fetched) holding the commit."""
         if not _HEX_ID.fullmatch(sha):
             return []
-        _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)",
-                            "--contains", sha])
-        return [r.strip() for r in out.splitlines() if r.strip()]
+        # Attached form: the (hex-checked) id is the option's value, never an option.
+        _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)%00",
+                            f"--contains={sha}"])
+        return [r.strip() for r in out.split("\0") if r.strip()]
 
     def has_commit(self, sha: str) -> bool:
         if not _HEX_ID.fullmatch(sha):
             return False
-        code, _ = self._run(["cat-file", "-e", f"{sha}^{{commit}}"], check=False)
+        code, _ = self._run(["cat-file", "-e", "--end-of-options", f"{sha}^{{commit}}"],
+                            check=False)
         return code == 0
 
     # -- paths ----------------------------------------------------------------
