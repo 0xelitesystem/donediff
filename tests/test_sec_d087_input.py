@@ -441,3 +441,67 @@ def test_failed_markdown_write_leaves_no_file(tmp_path, monkeypatch, capsys):
                      "--md", str(md)])
     assert code == 2 and "cannot write" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == [tmp_path / "surr.jsonl"]
+
+
+# -- SEC-242: the Goose deleted-gap check in one pass ----------------------------
+
+def _interleaved_goose(tmp_path, n: int) -> str:
+    """Two sessions whose rows alternate, "id" a plain column (no rowid index),
+    one id missing near the start: every gap of session A needs a check."""
+    import sqlite3
+    db = tmp_path / "g.db"
+    conn = sqlite3.connect(db)
+    for statement in mgo.SCHEMA[:2]:
+        conn.execute(statement)
+    conn.execute("CREATE TABLE messages (id INT, message_id TEXT, session_id TEXT NOT NULL, "
+                 "role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER "
+                 "NOT NULL, tokens INTEGER, metadata_json TEXT)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (18)")
+    conn.execute("INSERT INTO sessions (id, working_dir) VALUES ('A', '/home/dev/x')")
+    conn.execute("INSERT INTO sessions (id, working_dir) VALUES ('B', '/home/dev/y')")
+    text = json.dumps([{"type": "text", "text": "ok"}])
+    rows = [(1, "B", text, 1781092800)]
+    for i in range(1, n + 1):
+        rows.append((2 * i, "A", text, 1781092800 + 2 * i))
+        if 2 * i + 1 > 3 and i < n:
+            rows.append((2 * i + 1, "B", text, 1781092800 + 2 * i + 1))
+    conn.executemany("INSERT INTO messages (id, session_id, role, content_json, "
+                     "created_timestamp) VALUES (?, ?, 'assistant', ?, ?)", rows)
+    conn.commit()
+    conn.close()
+    return f"{db}#A"
+
+
+def test_goose_gap_check_is_one_pass(tmp_path, monkeypatch):
+    from donediff.readers import goose as gs
+    statements: list[str] = []
+    real = gs._connect
+
+    class Traced:
+        def __init__(self, db):
+            self.inner = real(db)
+
+        def __enter__(self):
+            conn = self.inner.__enter__()
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        def __exit__(self, *exc):
+            return self.inner.__exit__(*exc)
+
+    monkeypatch.setattr(gs, "_connect", Traced)
+    audit(_interleaved_goose(tmp_path, 400), "goose")
+    gap_counts = [s for s in statements if "id > " in s and "id < " in s]
+    assert len(gap_counts) <= 2, len(gap_counts)
+
+
+def test_goose_gap_check_still_finds_a_deleted_row():
+    from donediff.readers import goose as gs
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE messages (id INT, session_id TEXT, created_timestamp INTEGER)")
+    conn.executemany("INSERT INTO messages VALUES (?, ?, ?)",
+                     [(1, "A", 1), (2, "B", 2), (3, "A", 3), (5, "A", 5), (6, "B", 6), (7, "A", 7)])
+    assert gs._last_deleted_gap(conn, [1, 3, 5, 7], "A") == 3  # id 4 is gone
+    conn.execute("INSERT INTO messages VALUES (4, 'B', 4)")
+    assert gs._last_deleted_gap(conn, [1, 3, 5, 7], "A") is None

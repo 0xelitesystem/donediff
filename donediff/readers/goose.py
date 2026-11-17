@@ -65,6 +65,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from bisect import bisect_left, bisect_right
 import stat as stat_mod
 import sys
 from datetime import datetime, timezone
@@ -604,10 +605,14 @@ def _last_deleted_gap(conn, ids: list[int], sid: str = "") -> int | None:
                          (low, high)).fetchone()[0]
     if total == high - low + 1:
         return None
+    # One ordered pass over every id in the range, then a binary search per
+    # gap: a COUNT per gap is a full scan each when "id" is not the rowid,
+    # quadratic on a crafted database (SEC-242).
+    present = [row[0] for row in conn.execute(
+        'SELECT id FROM "messages" WHERE id BETWEEN ? AND ? ORDER BY id', (low, high))]
     for before, after in zip(reversed(ids[:-1]), reversed(ids[1:])):
         if after - before > 1:
-            between = conn.execute('SELECT COUNT(*) FROM "messages" WHERE id > ? AND id < ?',
-                                   (before, after)).fetchone()[0]
+            between = bisect_left(present, after) - bisect_right(present, before)
             if between < after - before - 1:
                 return before
     return None
