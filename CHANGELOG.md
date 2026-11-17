@@ -113,6 +113,77 @@ donediff now reads more coding agents than Claude Code.
   original is ever written.
 - SEC-219: a Goose tool name with no extension prefix is not taken as the
   developer extension's shell, write or edit.
+- SEC-218 follow-up: the Goose and opencode readers choose how to open a
+  database from the side files present: a `-wal` with a `-shm` is read from
+  a private copy and a lone `-wal` is refused, whatever the database header
+  says.
+- SEC-220 follow-up: home folders seen from WSL, MSYS and Cygwin
+  (`/mnt/<drive>/Users/<name>`, `/<drive>/Users/<name>`,
+  `/cygdrive/<drive>/Users/<name>`), and `users` in any case, are also shown
+  as `~`.
+- SEC-221: the hidden exit code check sees negation, any last pipe stage
+  that is not a check, `echo $?`, wrapped shells, a background `&`,
+  `exit 256`, `exit 00`, `exit $((0))` and words inside `||` tails.
+- SEC-222: list, plan and skip forms (`setup-plan`, fixtures,
+  `-DskipTests`, `-x test`, `ctest -N`, `-- --list`, option variables) are
+  not checks; output saying no test ran is no proof; `--exit-zero` is a
+  swallowed failure.
+- SEC-223: a file claim that names a folder needs a write to that path; a
+  missing path inside the project is not verified by a write elsewhere.
+- SEC-228: a number read from a log or a claim is capped at 18 significant
+  digits, so one over 4300 digits no longer crashes a reader; an overlong
+  exit code reads as a failure, an overlong count as no count.
+- SEC-229: the Claude Code reader replaces invalid UTF-8 instead of stopping
+  with a traceback; the bad line is counted as unreadable.
+- SEC-230: Goose and opencode refuse a session table that is virtual or has
+  a generated column; size caps count bytes; opencode has Goose's caps
+  (16 MiB per row, 500,000 rows and 128 MiB per session).
+- SEC-231: in the Claude Code reader a transcript line over 32 MiB is read
+  past in pieces and counted as unrecognised; a transcript over 512 MiB is
+  refused, and a sub-agent transcript over it is counted and not read.
+- SEC-232: in a background command's completion notice any non-zero exit
+  code wins, and a failed notice never reads as exit 0.
+- SEC-233: writes in a shell command are read stage by stage with quoted
+  text and comments blanked; `-o` counts as an output file only for programs
+  that take one.
+- SEC-234: Goose skip text counts only with no error flag and exit 0; skip
+  or decline text with failures in the output is a failed run.
+- SEC-235: claim text is masked for secrets before claims are read from it,
+  and every report masks quotes, evidence, signals, the working folder and
+  the session slug.
+- SEC-236: masking also covers Stripe test and webhook keys, Slack app,
+  refresh and webhook URLs, Google OAuth, JWT, npm, Hugging Face and
+  SendGrid tokens, and PEM private key bodies; its limits are documented.
+- SEC-237: a newline or tab from the log is shown escaped in terminal and
+  Markdown reports.
+- SEC-238: Markdown report text is inert outside code spans (no raw HTML,
+  autolinks, links or images, reference names included); code spans are
+  fenced past any backtick; pipes are escaped with their backslashes.
+- SEC-239: Markdown noise is stripped only outside code spans and an
+  underscore inside a word stays, so claims about `my_module.py`,
+  `__init__.py` or `run_1.md` are no longer dropped.
+- SEC-240: `--md` writes the report through a temporary file beside the
+  target and shows text it cannot encode as `?`; a failed write leaves no
+  file and exits 2 with one line.
+- SEC-241: a JSON text over 1 MiB with more than 1,000,000 values is refused
+  as unreadable.
+- SEC-242: the Goose deleted-message check reads the message ids once, then
+  searches each gap, instead of one table scan per gap.
+- SEC-243: a run's first private database copy first removes copy folders a
+  killed run left behind (only folders holding nothing but the copy and its
+  side files, no links, untouched for an hour); on Windows with Python 3.10
+  to 3.12 the copy folder is made owner-only, and no copy is made if that
+  fails.
+- SEC-244: behind a hidden exit code a pass marker counts only through
+  filters that pass lines unchanged (`tail`, `head`, `tee` and the like),
+  not `grep`, `sed` or `awk`.
+- SEC-245: claims are read with invisible characters dropped and look-alike
+  letters in mixed-script words folded, with a LOW `hidden_characters`
+  signal; reports escape zero-width, filler, separator and tag characters.
+- SEC-246: Claude Code decline text counts only with no exit code anywhere,
+  no failing Bash record and no long output after it.
+- SEC-247: path checks read every link's target before anything follows it;
+  network targets and `/net` and `/Network` automount paths are refused.
 
 ### Security
 
@@ -121,6 +192,53 @@ donediff now reads more coding agents than Claude Code.
   Gemini CLI, Qwen Code and Cline readers do not follow symlinks or Windows
   junctions in the agents' folders, and the opencode and Goose readers do not
   open a linked database or a database in a linked folder.
+- SEC-224, SEC-225, SEC-226, SEC-227 and SEC-248, listed under 0.4.2, are
+  also fixed in 0.5.0's code: git is started only from an absolute PATH entry
+  that is not the current folder and does not lie inside the project or its
+  work tree, never as a `.bat` or `.cmd`; a
+  project inside a bare repository is refused and git runs with
+  `safe.bareRepository=explicit`; every git transport is turned off; git's
+  log and refs are read on NUL separators, with full commit ids and
+  `--end-of-options`; config-defined hooks are turned off by name, and a
+  hook name that cannot be turned off is refused. Commit ids of 7 to 64 hex
+  digits are accepted, so SHA-256 repositories are read.
+
+## 0.4.2
+
+### Security
+
+Upgrade if you run donediff with the disk check on (the default) in a
+folder you did not create, such as a cloned repository. In 0.4.1 and
+earlier, a repository built to attack it could:
+
+- On Windows, run a program named `git.exe` placed in the folder donediff
+  was started from, instead of your installed git. donediff now starts only
+  a git found in the absolute folders on your PATH.
+- Make git read objects from a network share named by a bare repository
+  hidden among the project's files. On Windows, that connection can send
+  your Windows sign-in (NTLM) to that host. donediff now refuses a project
+  inside a bare repository.
+- With git older than 2.44, run a command named in the repository's own
+  config through a lazy fetch, despite donediff's network setting. donediff
+  now turns off every git transport with a setting the repository's config
+  cannot override.
+- Through a crafted commit message, pass git an option that writes a file
+  anywhere you can write, or list a commit that does not exist as one made
+  during the session. donediff now reads git's log with NUL separators,
+  accepts only full commit ids, and passes no value read from the
+  repository to git as an option.
+- On git 2.50 or newer, config-defined hooks were not turned off (no
+  command donediff runs fires one). donediff now turns them off by name.
+
+## 0.4.1
+
+### Fixed
+
+- A command whose result never reached the transcript (the session was cut off
+  or the run was killed) was marked VERIFIED as "succeeded (exit 0)". It is now
+  UNVERIFIED with the reason "no result for this run in the log", so it lowers
+  the score and counts against `--fail-under`. Runs that have a result keep
+  their verdicts.
 
 ## 0.4.0
 
