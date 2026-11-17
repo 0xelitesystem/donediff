@@ -47,7 +47,10 @@ from .models import (
 )
 from .parser import epoch
 from .redact import redact_secrets
-from .shell import base_name, confined, is_remote_path, norm_path, run_directory, windows_drive
+from .shell import (
+    base_name, confined, is_remote_path, norm_path, program, run_directory, split_statements,
+    windows_drive,
+)
 
 RELAYED_REASON = "relayed from an agent's report, no command result seen"
 MASKED_REASON = "exit code hidden by a pipe and output does not show the result"
@@ -620,6 +623,37 @@ _SHELL_WRITE = re.compile(
     r"\s*[\"']?([^\s\"'|;&<>]+)",
     re.IGNORECASE,
 )
+# SEC-233: quoted text is an argument, not a redirection (`echo "a > b"`),
+# and -o means "output file" only for these programs (grep -o does not).
+_QUOTED_SPAN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
+_OUTPUT_FLAG_PROGRAMS = frozenset({
+    "curl", "wget", "gcc", "g++", "cc", "clang", "clang++", "go", "pandoc", "tsc",
+    "zip", "dotnet", "cargo", "rustc", "javac", "openssl", "ffmpeg", "sort", "uv",
+})
+_TARGET_BEFORE = re.compile(
+    r"(?:>>?|\s-o|\s--output=?|\s--out=?|\bOut-File(?:\s+-FilePath)?"
+    r"|\b(?:Set|Add)-Content(?:\s+-Path)?|\btee(?:\s+-a)?)\s*$", re.IGNORECASE)
+
+
+def _shell_write_paths(command: str) -> list[str]:
+    """Targets of redirections and output flags, read stage by stage with
+    quoted text blanked out (a quoted target right after a redirect or an
+    output flag is kept)."""
+    paths: list[str] = []
+    for statement in split_statements(command):
+        for stage in (s for s in statement.stages if s):
+            text = _QUOTED_SPAN.sub(
+                lambda m: m.group() if _TARGET_BEFORE.search(m.string[:m.start()])
+                else " " * len(m.group()), stage)
+            comment = re.search(r"(?:^|\s)#", text)
+            if comment:
+                text = text[:comment.start()]  # a comment writes nothing
+            prog = program(stage)
+            for match in _SHELL_WRITE.finditer(text):
+                if match.group().lstrip().startswith("-o") and prog not in _OUTPUT_FLAG_PROGRAMS:
+                    continue
+                paths.append(match.group(1))
+    return paths
 
 
 def _same_file(path: str, base: str, claimed: str, claimed_base: str) -> bool:
@@ -643,7 +677,7 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
     unfinished: list[Event] = []  # shell writes the log does not show succeeding (SEC-208)
     for event in session.events[:claim.event_index]:
         if event.kind is EventKind.TOOL_CALL and event.command and not _command_failed(event):
-            for path in _SHELL_WRITE.findall(event.command):
+            for path in _shell_write_paths(event.command):
                 if _same_file(path, event.cwd or session.cwd, target, session.cwd):
                     if not evidence_of_success(event)[0]:
                         unfinished.append(event)
