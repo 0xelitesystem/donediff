@@ -492,14 +492,20 @@ class _Parse:
             structured = structured if isinstance(structured, dict) else None
         else:
             return
-        if not failed and text.lstrip().startswith(_SKIPPED):
+        code = _exit(structured.get("exit_code")) if structured else None
+        # A command's own output can start with Goose's skip or decline text
+        # (SEC-234): it reads "did not run" only with no error flag or a zero
+        # exit code for the skip, and never when the text reports failures.
+        ran_and_failed = bool(FAILURE_IN_OUTPUT.search(text))
+        if (not failed and is_error is not True and code in (None, 0)
+                and not ran_and_failed and text.lstrip().startswith(_SKIPPED)):
             # Skipped in chat mode: never ran, so no evidence of anything (SEC-214).
             # A write or edit is a failure; a command is status only (it did
             # not fail either), with no exit code and no hints from the text.
             for event in events:
                 event.mark_not_run("declined", text)
             return
-        not_run = _not_run(text) if is_error and not failed else None
+        not_run = _not_run(text) if is_error and not failed and not ran_and_failed else None
         if not_run is not None and (structured is None or "exit_code" not in structured):
             for event in events:
                 if not (event.result_seen and event.is_error):  # a logged failure still wins
