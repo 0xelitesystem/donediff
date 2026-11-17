@@ -505,3 +505,67 @@ def test_goose_gap_check_still_finds_a_deleted_row():
     assert gs._last_deleted_gap(conn, [1, 3, 5, 7], "A") == 3  # id 4 is gone
     conn.execute("INSERT INTO messages VALUES (4, 'B', 4)")
     assert gs._last_deleted_gap(conn, [1, 3, 5, 7], "A") is None
+
+
+# -- SEC-243: private copies left by a killed run --------------------------------
+
+def _copy_folder(root: Path, name: str, files=("copy.db", "copy.db-wal"), age=0.0) -> Path:
+    import os
+    folder = root / name
+    folder.mkdir()
+    for f in files:
+        (folder / f).write_bytes(b"x")
+        os.utime(folder / f, (1_000_000 - age, 1_000_000 - age))
+    os.utime(folder, (1_000_000 - age, 1_000_000 - age))
+    return folder
+
+
+def test_stale_copy_folders_are_swept_and_nothing_else(tmp_path):
+    from donediff.readers import opencode as oc
+    old = oc.STALE_COPY + 10
+    stale = _copy_folder(tmp_path, "donediff-old1", age=old)
+    fresh = _copy_folder(tmp_path, "donediff-new1", age=5)
+    extra = _copy_folder(tmp_path, "donediff-mix1", files=("copy.db", "notes.txt"), age=old)
+    other = _copy_folder(tmp_path, "something-old", age=old)
+    empty = tmp_path / "donediff-empty"
+    empty.mkdir()
+    oc.sweep_stale_copies(str(tmp_path), now=1_000_000)
+    assert not stale.exists()
+    assert fresh.exists() and extra.exists() and other.exists() and empty.exists()
+
+
+def test_first_private_copy_sweeps_once(tmp_path, monkeypatch):
+    from donediff.readers import opencode as oc
+    calls = []
+    monkeypatch.setattr(oc, "_SWEPT", False)
+    monkeypatch.setattr(oc, "sweep_stale_copies", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(oc.tempfile, "tempdir", str(tmp_path))
+    for name in ("a", "b"):
+        db = tmp_path / f"{name}.db"
+        db.write_bytes(b"x")
+        (tmp_path / f"{name}.db-wal").write_bytes(b"y")
+        oc.private_copy(db, "copy failed")
+    oc.drop_copies()
+    assert calls == [1]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ACLs")
+def test_private_copy_folder_is_owner_only(tmp_path, monkeypatch):
+    import subprocess
+    from donediff.readers import opencode as oc
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    subprocess.run(["icacls", str(shared), "/grant", "*S-1-1-0:(OI)(CI)F"],
+                   check=True, capture_output=True)
+    monkeypatch.setattr(oc.tempfile, "tempdir", str(shared))
+    db = tmp_path / "x.db"
+    db.write_bytes(b"x")
+    (tmp_path / "x.db-wal").write_bytes(b"y")
+    copy = oc.private_copy(db, "copy failed")
+    try:
+        acl = subprocess.run(["icacls", str(copy.parent)], capture_output=True,
+                             text=True).stdout
+        assert "Everyone" not in acl and "S-1-1-0" not in acl
+        assert "(I)" not in acl  # nothing inherited from the shared temp folder
+    finally:
+        oc.drop_copies()

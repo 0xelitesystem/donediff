@@ -48,7 +48,9 @@ import re
 import shutil
 import sqlite3
 import stat as stat_mod
+import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -186,6 +188,90 @@ def drop_copies() -> None:
 atexit.register(drop_copies)
 
 
+_COPY_PREFIX = "donediff-"
+_COPY_FILES = frozenset({"copy.db", "copy.db-wal", "copy.db-shm", "copy.db-journal"})
+STALE_COPY = 60 * 60  # seconds after which a copy folder no run holds is swept (SEC-243)
+_SWEPT = False
+
+
+def _is_plain(entry: os.DirEntry) -> bool:
+    """A real file or folder: not a link, junction or other reparse point."""
+    info = entry.stat(follow_symlinks=False)
+    return not (entry.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def sweep_stale_copies(folder: str | None = None, now: float | None = None) -> None:
+    """Delete private copy folders a killed run left behind (SEC-243).
+
+    Only folders shaped exactly like one: named donediff-*, holding nothing
+    but copy.db and its side files, none of them links, untouched for
+    STALE_COPY seconds. Anything else in the temp folder is left alone.
+    """
+    folder = folder or tempfile.gettempdir()
+    now = time.time() if now is None else now
+    try:
+        entries = [e for e in os.scandir(folder) if e.name.startswith(_COPY_PREFIX)]
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if not (_is_plain(entry) and entry.is_dir(follow_symlinks=False)):
+                continue
+            inside = list(os.scandir(entry.path))
+            if not inside or any(i.name not in _COPY_FILES or not _is_plain(i)
+                                 or not i.is_file(follow_symlinks=False) for i in inside):
+                continue
+            newest = max([entry.stat(follow_symlinks=False).st_mtime]
+                         + [i.stat(follow_symlinks=False).st_mtime for i in inside])
+            if now - newest < STALE_COPY:
+                continue
+            for i in inside:
+                os.unlink(i.path)
+            os.rmdir(entry.path)
+        except OSError:
+            continue  # in use by a live run, or not ours to remove
+
+
+def _owner_only(folder: str) -> bool:
+    """Give a new folder an owner-only ACL on Windows before Python 3.13 (SEC-243).
+
+    Python 3.13+ creates mkdtemp folders that way itself; older versions let
+    the folder inherit the temp folder's ACL. The same DACL as 3.13 uses:
+    SYSTEM, Administrators and the owner, inheritance cut. False on failure.
+    """
+    if os.name != "nt" or sys.version_info >= (3, 13):
+        return True
+    import ctypes
+    from ctypes import wintypes
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    sd = ctypes.c_void_p()
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)", 1, ctypes.byref(sd), None):
+        return False
+    try:
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        advapi.GetSecurityDescriptorDacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL)]
+        if not advapi.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl),
+                                                ctypes.byref(defaulted)):
+            return False
+        advapi.SetNamedSecurityInfoW.argtypes = [
+            wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p]
+        advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
+        # SE_FILE_OBJECT = 1; DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+        return advapi.SetNamedSecurityInfoW(folder, 1, 0x4 | 0x80000000, None, None,
+                                            dacl, None) == 0
+    finally:
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree(sd)
+
+
 def private_copy(db: Path, why: str) -> Path:
     """The database and its -wal, copied into a new private temp folder (SEC-218).
 
@@ -193,7 +279,9 @@ def private_copy(db: Path, why: str) -> Path:
     even a read-only connection rewrites the -shm. The -shm is not copied:
     SQLite rebuilds it from the -wal inside the private folder, so a stale or
     half-written index is never trusted. One copy is kept per unchanged source
-    and deleted when the source changes, by drop_copies, and at exit.
+    and deleted when the source changes, by drop_copies, and at exit; one a
+    killed run left behind is swept by the next run's first copy (SEC-243).
+    The folder is owner-only on every supported Python, or no copy is made.
     """
     key = os.path.normcase(os.path.abspath(db))
     signature = _signature(db)
@@ -201,9 +289,15 @@ def private_copy(db: Path, why: str) -> Path:
     if held is not None and held[0] == signature and held[2].is_file():
         return held[2]
     _drop_copy(key)
-    folder = tempfile.mkdtemp(prefix="donediff-")
+    global _SWEPT
+    if not _SWEPT:
+        _SWEPT = True
+        sweep_stale_copies()
+    folder = tempfile.mkdtemp(prefix=_COPY_PREFIX)
     copy = Path(folder) / "copy.db"
     try:
+        if not _owner_only(folder):
+            raise OSError("the private folder could not be made owner-only")
         shutil.copyfile(db, copy)
         shutil.copyfile(os.fspath(db) + "-wal", os.fspath(copy) + "-wal")
     except OSError:
