@@ -607,3 +607,113 @@ def test_cli_reads_git_with_the_disk_check_on(tmp_path, capsys):
     assert main(["audit", path, "--json"]) == 0
     claim, = json.loads(capsys.readouterr().out)["claims"]
     assert claim["verdict"] == "contradicted" and claim["evidence_source"] == "git"
+
+
+# -- 0.4.2 forward-port: hotfix-042 tests with no equal in test_sec_224_248.py --
+
+def _git_version() -> tuple[int, ...]:
+    import re
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    return tuple(int(n) for n in re.findall(r"\d+", out)[:3])
+
+
+def _embedded_bare(tmp_path: Path, alternates: str) -> Path:
+    """SEC-225 setup: tracked files in a clone shaped like a git directory, config
+    claiming a work tree, alternates pointing elsewhere."""
+    clone = make_repo(tmp_path)
+    sha = commit_file(clone, "src/a.py", "Add a")
+    emb = clone / "vendor" / "tool"
+    git(tmp_path, "init", "-q", "--bare", str(emb))
+    (emb / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    (emb / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (emb / "config").write_text("[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+                                f"\tworktree = {emb.as_posix()}\n", encoding="utf-8")
+    (emb / "objects" / "info" / "alternates").write_text(alternates + "\n", encoding="utf-8")
+    return emb
+
+
+@needs_git
+@pytest.mark.parametrize("alternates", ["network", "local"])
+def test_project_inside_a_real_embedded_bare_repository_is_refused(tmp_path, monkeypatch,
+                                                                    alternates):
+    """SEC-225 (0.4.2): a real `git init --bare` folder inside the clone, with a work
+    tree in its config and network or local alternates, is refused before git runs,
+    and the audit says so."""
+    target = ("\\\\host.invalid\\share\\objects" if alternates == "network"
+              else (tmp_path / "proj" / ".git" / "objects").as_posix())
+    emb = _embedded_bare(tmp_path, target)
+    _refuse_popen(monkeypatch)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "project folder is inside a bare repository"
+    finding = one(audit(tmp_path, emb, commit_records("Add a")
+                        + [assistant_text("I committed the changes.")]),
+                  ClaimType.COMMIT_MADE)
+    assert "git state not checked (project folder is inside a bare repository)" \
+        in finding.evidence
+
+
+@needs_git
+@pytest.mark.skipif(shutil.which("git") is None or _git_version() < (2, 38),
+                    reason="safe.bareRepository needs git 2.38+")
+def test_git_itself_refuses_an_implicit_bare_repository(tmp_path, monkeypatch):
+    """SEC-225, second layer (0.4.2): with the pre-check out of the way, git is run
+    with safe.bareRepository=explicit and does not open the embedded folder."""
+    emb = _embedded_bare(tmp_path, (tmp_path / "proj" / ".git" / "objects").as_posix())
+    monkeypatch.setattr(gitstate, "_refuse_network_repository", lambda *a: None)
+    found = gitstate.GitRepo(str(emb))
+    assert found.reason == "not a git work tree"
+
+
+@needs_git
+def test_ids_from_outside_never_reach_git_as_options(tmp_path, monkeypatch):
+    """SEC-227 (0.4.2): a sha that is not hex is never run, and every id that does
+    reach git sits after --end-of-options or in an attached --contains=<id>."""
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/a.py", "Add a")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    calls = []
+    real = subprocess.Popen
+
+    def spy(argv, **kwargs):
+        calls.append(list(argv))
+        return real(argv, **kwargs)
+
+    with gitstate.GitRepo(str(repo)) as found:
+        monkeypatch.setattr(gitstate.subprocess, "Popen", spy)
+        assert found.files_in(gitstate.Commit("--output=x", 0.0, "forged")) == set()
+        assert calls == []
+        assert found.files_in(gitstate.Commit(sha, 0.0, "Add a")) == {"src/a.py"}
+        assert found.has_commit(sha[:8])
+        assert found.remote_branches_containing(sha) == ["origin/main"]
+        assert found.remote_refs() == ["origin/main"]
+    show, cat_file, contains = calls[0], calls[1], calls[2]
+    assert show[-2:] == ["--end-of-options", sha]
+    assert cat_file[-2:] == ["--end-of-options", f"{sha[:8]}^{{commit}}"]
+    assert contains[-1] == f"--contains={sha}"
+
+
+def _plant_git(folder: Path) -> Path:
+    """A fake git (it only exits 1) where a hostile clone could ship one."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fake = folder / ("git.exe" if os.name == "nt" else "git")
+    fake.write_bytes(b"" if os.name == "nt" else b"#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    return fake
+
+
+@needs_git
+def test_git_is_never_taken_from_a_folder_inside_the_project(tmp_path, monkeypatch):
+    """SEC-224 (0.4.2): relative PATH entries, the current folder and folders inside
+    the audited project (a subfolder too) are never searched; with only those on PATH
+    git is not found."""
+    repo = make_repo(tmp_path)
+    cwd = tmp_path / "cloned"
+    planted = [_plant_git(cwd), _plant_git(repo), _plant_git(repo / "bin")]
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        [".", "bin", str(cwd), str(repo), str(repo / "bin"), os.environ.get("PATH", "")]))
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found._git and Path(found._git).resolve() not in {p.resolve() for p in planted}
+        assert found.available, found.reason
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(cwd), str(repo / "bin")]))
+    assert gitstate.GitRepo(str(repo)).reason == "git not found"
