@@ -109,12 +109,22 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
 ]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-# Markdown noise we strip before matching: bold/italics, checkmarks, bullets.
-_MD_NOISE = re.compile(r"[*_#>]|^\s*[-•✅✓✔☑]+\s*", re.MULTILINE)
+# Markdown noise we strip before matching: emphasis markers (an underscore
+# only at the edge of a word, so my_module.py keeps its own), headings and
+# quotes at a line start, checkmarks, bullets. Code spans are kept verbatim:
+# file names hold underscores and asterisks (SEC-239).
+_MD_NOISE = re.compile(r"\*+|(?<!\w)_+|_+(?!\w)|^[ \t]*(?:#{1,6}|>+)[ \t]*|^\s*[-•✅✓✔☑]+\s*",
+                       re.MULTILINE)
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
 
 
 def _sentences(text: str) -> list[str]:
-    cleaned = _MD_NOISE.sub(" ", text)
+    parts: list[str] = []
+    last = 0
+    for span in _CODE_SPAN.finditer(text):
+        parts += [_MD_NOISE.sub(" ", text[last:span.start()]), span.group()]
+        last = span.end()
+    cleaned = "".join(parts) + _MD_NOISE.sub(" ", text[last:])
     return [s.strip() for s in _SENTENCE_SPLIT.split(cleaned) if s.strip()]
 
 
