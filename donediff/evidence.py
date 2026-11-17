@@ -126,12 +126,34 @@ def log_int(text: str, overlong: int | None = None) -> int | None:
     return sign * int(digits)
 
 
+# What a runner prints when it ran no test at all (SEC-222).
+_RAN_NOTHING = re.compile(
+    r"\bno tests ran\b|\bcollected 0 items\b|^Ran 0 tests\b|\bTests are skipped\b"
+    r"|\bNo tests found\b|\bNo tests were found\b|\bno tests to run\b",
+    re.IGNORECASE | re.MULTILINE)
+_GO_OK_LINE = re.compile(r"^ok\s+\S+.*$", re.MULTILINE)
+
+
+def ran_nothing(output: str) -> bool:
+    """True when the output says the runner ran no test (go: every package
+    line says [no tests to run])."""
+    if not output:
+        return False
+    go_ok = _GO_OK_LINE.findall(output)
+    if go_ok:
+        return all("[no tests to run]" in line for line in go_ok)
+    return bool(_RAN_NOTHING.search(output))
+
+
 def passed_counts(output: str) -> frozenset[int]:
     """Counts of passing tests the output reports as a total: the last one
-    shown, and for cargo (one result line per test binary) their sum."""
+    shown, and for cargo (one result line per test binary) their sum.
+    {0} when the output says no test ran at all (SEC-222)."""
     if not output:
         return frozenset()
     found = [log_int(next(g for g in m.groups() if g)) for m in _PASSED_COUNT.finditer(output)]
+    if not any(found) and ran_nothing(output):
+        return frozenset({0})
     if not found or found[-1] is None:
         return frozenset()  # no count, or an overlong last one: no count to match
     totals = {found[-1]}
@@ -183,7 +205,19 @@ def commit_subjects(command: str) -> list[str]:
 _READ_ONLY_FLAGS = frozenset({
     "--version", "-V", "--help", "-h", "--collect-only", "--co",
     "--listTests", "--list-tests", "--dry-run", "--no-run", "--showConfig",
+    # SEC-222: forms that plan, list or skip instead of running the tests.
+    "--setup-plan", "--setup-only", "--fixtures", "--fixtures-per-test",
+    "--markers", "--list", "-list", "--show-only", "-DskipTests",
+    "-DskipTests=true", "-Dmaven.test.skip", "-Dmaven.test.skip=true",
 })
+# ctest -N lists the tests without running them.
+_CTEST_LIST = frozenset({"-N", "--show-only"})
+# Option variables that change what a runner does without showing in its argv.
+_OPTION_ENV = re.compile(
+    r"(?:\$env:)?\b(?:PYTEST_ADDOPTS|MAVEN_OPTS|MAVEN_ARGS|GRADLE_OPTS|NODE_OPTIONS)"
+    r"\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
+# --exit-zero (ruff, flake8, pylint): findings no longer fail the run.
+_EXIT_ZERO_FLAG = re.compile(r"(?:^|\s)--exit-zero\b")
 _MAKE_DRY_RUN = frozenset({"-n", "--just-print", "--recon"})
 _MAKE_PROGRAMS = frozenset({"make", "gmake", "nmake", "mingw32-make", "ninja"})
 
@@ -217,6 +251,11 @@ def _read_only(norm: str) -> bool:
     words = [w.strip("\"'") for w in norm.split()]
     if any(w in _READ_ONLY_FLAGS for w in words[1:]):
         return True
+    if words and words[0] == "ctest" and any(w in _CTEST_LIST for w in words[1:]):
+        return True
+    # gradle test -x test: the test task is excluded.
+    if any(a == "-x" and b.lstrip(":") == "test" for a, b in zip(words, words[1:])):
+        return True
     return bool(words) and words[0] in _MAKE_PROGRAMS and any(
         w in _MAKE_DRY_RUN for w in words[1:])
 
@@ -227,13 +266,21 @@ def stage_types(stage: str) -> frozenset[ClaimType]:
         return frozenset()
     found = frozenset(t for t, pattern in COMMAND_EVIDENCE.items()
                       if pattern.match(norm))
-    if found & CHECK_TYPES and _read_only(norm):
+    if found & CHECK_TYPES and (_read_only(norm) or _env_read_only(stage)):
         found -= CHECK_TYPES
     return found
 
 
+def _env_read_only(text: str) -> bool:
+    """True when an option variable set in `text` (PYTEST_ADDOPTS=--co ...)
+    holds a flag that makes the runner list or skip instead of run."""
+    return any(_read_only("x " + m.group(1).strip("\"'")) for m in _OPTION_ENV.finditer(text))
+
+
 def check_types(command: str) -> frozenset[ClaimType]:
-    """Claim types this command can back, judged stage by stage."""
+    """Claim types this command can back, judged stage by stage. An option
+    variable set anywhere in the command (`export PYTEST_ADDOPTS=--co; pytest`)
+    that makes the runner list or skip drops the check types (SEC-222)."""
     if not command:
         return frozenset()
     found: set[ClaimType] = set()
@@ -241,6 +288,8 @@ def check_types(command: str) -> frozenset[ClaimType]:
         for stage in statement.stages:
             if stage:
                 found |= stage_types(stage)
+    if found & CHECK_TYPES and _env_read_only(command):
+        found -= CHECK_TYPES
     return frozenset(found)
 
 
@@ -348,6 +397,12 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
                     if s and _PASS_WITH_NO_TESTS.search(s) and _has_check([s])), None)
         if hit is not None:
             found.append(("swallowed_failure", "--passWithNoTests", hit))
+            break
+    for st in statements:
+        hit = next((s for s in st.stages
+                    if s and _EXIT_ZERO_FLAG.search(s) and _has_check([s])), None)
+        if hit is not None:
+            found.append(("swallowed_failure", "--exit-zero", hit))
             break
     norms = [normalize_stage(st.stages[0]) for st in statements]
     texts = [_text(st) for st in statements]

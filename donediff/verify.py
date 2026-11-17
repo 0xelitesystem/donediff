@@ -98,8 +98,11 @@ def _no_result(run: Event) -> str:
 
 def _no_proof(run: Event) -> str | None:
     """Why a run that did not fail is still no proof that it passed, else None:
-    its exit code is hidden, the log has a status only, or it has no explicit
-    success record (evidence_of_success)."""
+    its exit code is hidden, the log has a status only, it ran no test, or it
+    has no explicit success record (evidence_of_success)."""
+    if run.passed_counts == frozenset({0}) and ClaimType.TESTS_PASS in run.check_types:
+        # SEC-222: "[no tests to run]", "collected 0 items", "Tests are skipped".
+        return f"the run's output says no test ran: `{_short(run.command)}`"
     reason = _inconclusive(run)
     if reason:
         return f"{reason}: `{_short(run.command)}`"
