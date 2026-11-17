@@ -153,6 +153,7 @@ def test_prompts_and_deliveries_carry_line_numbers():
     "echo pipefail; pytest | tail",
     "pytest | tail # pipefail",
     "echo LASTEXITCODE; npm test | Select-Object -Last 5",
+    "pytest | tail; echo ${PIPESTATUS[0]}",  # SEC-221: printing it keeps nothing
 ])
 def test_mentioning_pipefail_does_not_keep_the_status(command):
     assert "masked_exit_code" in _kinds(command)
@@ -161,7 +162,8 @@ def test_mentioning_pipefail_does_not_keep_the_status(command):
 @pytest.mark.parametrize("command", [
     "set -euo pipefail; pytest | tail",
     "set -e -o pipefail\npytest | tail",
-    "pytest | tail; echo ${PIPESTATUS[0]}",
+    "pytest | tail; exit ${PIPESTATUS[0]}",
+    "pytest | tail; if [ ${PIPESTATUS[0]} -ne 0 ]; then exit 1; fi",
     "npm test | Select-Object -Last 5; if ($LASTEXITCODE -ne 0) { exit 1 }",
 ])
 def test_status_kept_before_or_read_after_is_not_flagged(command):

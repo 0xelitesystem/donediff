@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 from .models import ClaimType
-from .shell import FILTERS, normalize_stage, program, split_statements
+from .shell import normalize_stage, program, split_statements, wrapper_inner
 
 COMMAND_EVIDENCE: dict[ClaimType, re.Pattern] = {
     ClaimType.TESTS_PASS: re.compile(
@@ -195,14 +195,20 @@ _PASS_WITH_NO_TESTS = re.compile(r"--passWithNoTests\b")
 _PIPEFAIL_ON = re.compile(r"^set\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*o\s+pipefail\b")
 # `set -e` (or -eu, -euo ...): a failing statement stops the script.
 _ERREXIT_ON = re.compile(r"^set\s+(?:-[A-Za-z]+\s+)*-[A-Za-df-z]*e")
-# Reading the real status after the pipeline or statement.
-_STATUS_READ = re.compile(
-    r"\$\{?PIPESTATUS\b|\bexit\s+\$LASTEXITCODE\b|\bif\s*\(\s*\$LASTEXITCODE\b"
-    r"|\$\?", re.IGNORECASE)
-# What follows `||` and still fails: exit with a non-zero or no code,
-# return non-zero, false, throw.
-_FAILS_AGAIN = re.compile(
-    r"\b(?:exit|return)\b(?!\s+(?:/b\s+)?0\b)|\bfalse\b|\bthrow\b", re.IGNORECASE)
+# The real status is kept only when the command EXITS with it (SEC-221):
+# `exit $?`, `exit ${PIPESTATUS[0]}`, `exit $LASTEXITCODE`, `exit $rc`
+# after `rc=$?`. Printing it (`echo $?`) keeps nothing: the call's status
+# is then echo's.
+_STATUS_EXIT = re.compile(
+    r"\bexit\s+\"?\$\{?(?:\?|PIPESTATUS\[\d+\]|LASTEXITCODE)\}?\"?(?=[\s;)}]|$)",
+    re.IGNORECASE)
+# A test of the status (`[ $? -ne 0 ]`, `if ($LASTEXITCODE -ne 0)`,
+# `if (-not $?)`): it keeps the status only when a failing exit follows.
+_STATUS_REF = re.compile(r"\$\{?(?:\?|PIPESTATUS\b|LASTEXITCODE\b)", re.IGNORECASE)
+_STATUS_SAVED = re.compile(r"\b([A-Za-z_]\w*)=\"?\$\{?(?:\?|PIPESTATUS\[\d+\])", re.IGNORECASE)
+_EXIT_WORD = re.compile(r"^(?:exit|return)(?:\s+(?:/b\s+)?(\S+?))?[\s;)}]*$", re.IGNORECASE)
+# `wait <pid>` returns the background job's status; a bare `wait` returns 0.
+_WAIT_FOR_JOB = re.compile(r"^wait\s+\S", re.IGNORECASE)
 # Words that close a block; they do not set the status themselves.
 _BLOCK_CLOSERS = frozenset({"done", "fi", "esac", "}", ")", "end"})
 
@@ -242,6 +248,72 @@ def _has_check(stages: list[str]) -> bool:
     return any(stage_types(s) & CHECK_TYPES for s in stages if s)
 
 
+def _failing_stage(stage: str) -> bool:
+    """True for a stage that always fails: false, throw ..., a bare exit or
+    return, or exit/return with a literal code that is non-zero mod 256.
+    A word inside an argument (`echo false`) or a computed code is not."""
+    norm = normalize_stage(stage).rstrip(" ;)}")
+    low = norm.lower()
+    if low in ("false", "$false") or low == "throw" or low.startswith("throw "):
+        return True
+    match = _EXIT_WORD.match(norm)
+    if match is None:
+        return False
+    code = match.group(1)
+    return code is None or (re.fullmatch(r"-?\d+", code) is not None
+                            and int(code) % 256 != 0)
+
+
+def _fails_again(statements) -> bool:
+    """True when a `||` tail still fails: an exit or throw that is reached
+    (not the right side of another `||`), or a false that sets the status."""
+    for i, st in enumerate(statements):
+        stage = next((s for s in reversed(st.stages) if s), "")
+        if not stage or not _failing_stage(stage):
+            continue
+        if i and statements[i - 1].op == "||":
+            continue  # `true || exit 1`: only runs when the left side failed
+        word = normalize_stage(stage).split(" ", 1)[0].lower()
+        if word in ("exit", "return", "throw") or i == len(statements) - 1:
+            return True
+    return False
+
+
+def _status_kept(after: list[str]) -> bool:
+    """True when the statements after a check exit with its status."""
+    saved: set[str] = set()
+    for i, text in enumerate(after):
+        if _STATUS_EXIT.search(text):
+            return True
+        saved.update(m.group(1).lower() for m in _STATUS_SAVED.finditer(text))
+        for name in saved:
+            if re.search(r"\bexit\s+\"?\$\{?" + re.escape(name) + r"\b", text, re.IGNORECASE):
+                return True
+        if _STATUS_REF.search(text) and any(_fails_in(t) for t in after[i:]):
+            return True
+    return False
+
+
+# exit/return/throw/false in command position (after ; { ( & | then else do
+# or at the start), outside quotes: `if [ $? -ne 0 ]; then exit 1; fi`.
+_EXIT_IN_TEXT = re.compile(
+    r"(?:^|[;{(&|]|\b(?:then|else|do)\b)\s*"
+    r"(?:(?:exit|return)\b(?:\s+(?:/b\s+)?([^\s;)}]+))?(?=[\s;)}]|$)|(throw|false)\b)",
+    re.IGNORECASE)
+_QUOTED_TEXT = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
+
+
+def _fails_in(text: str) -> bool:
+    """True when `text` runs a failing exit (inside an if block too)."""
+    for match in _EXIT_IN_TEXT.finditer(_QUOTED_TEXT.sub(" ", text)):
+        if match.group(2):
+            return True
+        code = match.group(1)
+        if code is None or (re.fullmatch(r"-?\d+", code) and int(code) % 256 != 0):
+            return True
+    return False
+
+
 def _text(statement) -> str:
     return " | ".join(s for s in statement.stages if s)
 
@@ -252,7 +324,7 @@ def _sets_status(statement) -> bool:
     return not (len(stages) == 1 and stages[0].strip() in _BLOCK_CLOSERS)
 
 
-def masking(command: str) -> list[tuple[str, str, str]]:
+def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
     """Ways this command hides the exit status of a test, build or check.
 
     Returns (kind, how, snippet) triples, where snippet is the part of the
@@ -288,7 +360,7 @@ def masking(command: str) -> list[tuple[str, str, str]]:
         before, after = norms[:pos], texts[pos + 1:]
         pipefail = any(_PIPEFAIL_ON.match(n) for n in before)
         errexit = any(_ERREXIT_ON.match(n) for n in before)
-        read_after = any(_STATUS_READ.search(t) for t in after)
+        read_after = _status_kept(after)
         prev_op = statements[pos - 1].op if pos else ""
         if prev_op == "||" and _has_check(chain):
             # Everything from here to the end of the &&/|| chain runs only
@@ -298,16 +370,30 @@ def masking(command: str) -> list[tuple[str, str, str]]:
                    and statements[tail_end].op in ("&&", "||")):
                 tail_end += 1
             tail = statements[pos:tail_end + 1]
-            rest = command[statement.start:]
-            if not (any(checks[pos:tail_end + 1]) or _FAILS_AGAIN.search(rest)
-                    or read_after or _STATUS_READ.search(texts[pos])):
+            closer = {"(": ")", "{": "}"}.get(stages[0].lstrip()[:1])
+            if closer:
+                # `|| (echo failed; exit 1)`: the group runs to its closer.
+                end = pos
+                while end < len(statements) - 1 and not texts[end].rstrip().endswith(closer):
+                    end += 1
+                tail = statements[pos:max(end, tail_end) + 1]
+            if not (any(checks[pos:tail_end + 1]) or _fails_again(tail)
+                    or read_after or _STATUS_EXIT.search(texts[pos])):
                 is_swallow = (len(stages) == 1 and _SWALLOW_TAIL.fullmatch(
                     normalize_stage(stages[0]) or ""))
                 how = "|| " + (stages[0].strip() if is_swallow else
                                " ".join(_text(st) for st in tail))
                 found.append(("swallowed_failure", how[:60],
                               command[chain_start:statement.end]))
-        if (checks[pos] and statement.op in (";", "\n") and not errexit
+        if checks[pos] and statement.op == "&" and not read_after and not any(
+                _WAIT_FOR_JOB.match(n) for n in norms[pos + 1:]):
+            # A check sent to the background (`pytest & wait`), or cmd's
+            # `a & b`: the call's status is whatever runs after it.
+            nxt = next((program(st.stages[0]) for st in statements[pos + 1:]
+                        if st.stages and st.stages[0]), "")
+            found.append(("masked_exit_code", "& " + (nxt or "(background)"),
+                          command[statement.start:]))
+        elif (checks[pos] and statement.op in (";", "\n") and not errexit
                 and not read_after):
             later = [i for i in range(pos + 1, len(statements))
                      if _sets_status(statements[i])]
@@ -324,10 +410,23 @@ def masking(command: str) -> list[tuple[str, str, str]]:
                     found.append(("masked_exit_code", how[:60],
                                   command[statement.start:last.end]))
         if len(stages) > 1 and not pipefail:
+            # Without pipefail the LAST stage's status is the pipeline's: any
+            # last stage that is not itself a check hides the check's status
+            # (a pager, a filter, `| true`, `| Out-Null`, `| xargs ...`).
             last_prog = program(stages[-1])
-            if last_prog in FILTERS and _has_check(stages[:-1]) and not read_after:
-                found.append(("masked_exit_code", "| " + last_prog,
+            if (not _has_check(stages[-1:]) and _has_check(stages[:-1])
+                    and not read_after):
+                found.append(("masked_exit_code", "| " + (last_prog or "?"),
                               command[statement.start:statement.end]))
+        if stages[0].lstrip("({ \t").startswith("!") and _has_check(stages[:1]):
+            # `! pytest`: the status is negated, a failing run reads exit 0.
+            found.append(("swallowed_failure", "! (status negated)",
+                          command[statement.start:statement.end]))
+        for stage in stages:
+            # bash -c "...", cmd /c "...": judge the inner command too.
+            inner = wrapper_inner(stage)
+            if inner is not None and _depth < 2:
+                found.extend(masking(inner, _depth + 1))
         if stages[0].lstrip()[:1] in ("(", "{"):
             # A group starts here: a `||` inside it applies to the group's
             # own commands, not to the chain before it.

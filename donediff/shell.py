@@ -246,6 +246,19 @@ def normalize_stage(stage: str, _depth: int = 0) -> str:
     return " ".join([head] + rest)
 
 
+def wrapper_inner(stage: str) -> str | None:
+    """The command a `bash -c "..."` or `cmd /c "..."` stage runs, else None."""
+    words = _WORD.findall(stage.strip().lstrip("({!& \t"))
+    while words and (words[0].lower() in _PREFIX_WORDS or _ASSIGNMENT.match(words[0])):
+        words.pop(0)
+    if len(words) < 3:
+        return None
+    head = _EXE_SUFFIX.sub("", _basename(words[0])).lower()
+    if head in _SHELL_WRAPPERS and words[1].lower() in _WRAPPER_FLAGS:
+        return _unquote(" ".join(words[2:]))
+    return None
+
+
 def program(stage: str) -> str:
     """The program name a stage starts, lowercased."""
     norm = normalize_stage(stage)
