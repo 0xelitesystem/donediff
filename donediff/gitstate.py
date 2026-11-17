@@ -46,7 +46,7 @@ TIMEOUT = 10.0  # seconds per git call
 OUTPUT_CAP = 4 * 1024 * 1024  # bytes read from one call; more is an error
 MAX_COMMITS = 200  # session commits read with show --name-only
 
-_HEX_ID = re.compile(r"[0-9a-fA-F]{7,40}")
+_HEX_ID = re.compile(r"[0-9a-fA-F]{7,64}")  # short id up to a full SHA-256
 _FULL_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # SHA-1 or SHA-256, as git prints it
 _EPOCH = re.compile(r"[0-9]{1,12}")
 _MSYS_DRIVE = re.compile(r"^/([A-Za-z])(?=/|$)")

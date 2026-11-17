@@ -465,3 +465,31 @@ def test_hook_name_that_cannot_be_turned_off_is_refused(tmp_path):
         fh.write('[hook "a=b"]\n\tcommand = false\n\tevent = post-index-change\n')
     found = gitstate.GitRepo(str(repo))
     assert found.reason == "repository names a hook that cannot be turned off"
+
+
+# -- SEC-224 follow-up: ids of a SHA-256 repository (64 hex) ---------------------
+
+@needs_git
+def test_sha256_repository_ids_are_accepted(tmp_path, monkeypatch):
+    repo = tmp_path / "proj256"
+    repo.mkdir()
+    try:
+        git(repo, "init", "-q", "-b", "main", "--object-format=sha256")
+    except subprocess.CalledProcessError:
+        pytest.skip("this git cannot create a SHA-256 repository")
+    git(repo, "config", "commit.gpgsign", "false")
+    (repo / "README.md").write_text("start\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-q", "-m", "Initial")
+    sha = git(repo, "rev-parse", "HEAD")
+    assert len(sha) == 64
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        assert found.has_commit(sha)
+        assert found.has_commit(sha[:12])
+        assert found.remote_branches_containing(sha) == ["origin/main"]
+        calls = _spy_popen(monkeypatch)
+        assert not found.has_commit(sha + "a")  # 65 hex: refused before git runs
+        assert found.remote_branches_containing(sha + "a") == []
+        assert calls == []
