@@ -63,6 +63,9 @@ from .codex import _join, clean_path, parse_patch
 _MAGIC = b"SQLite format 3\x00"
 _TIMEOUT = 1.0  # seconds to wait for a writer's lock before giving up
 _COPY_FAILED = "opencode database could not be copied for a read-only look; try again"
+_MAX_ROW = 16 * 1024 * 1024  # bytes of one message or part read; a larger one is skipped
+_MAX_ROWS = 500_000  # messages plus parts read for one session (SEC-230)
+_MAX_TOTAL = 128 * 1024 * 1024  # bytes of messages and parts held for one session (SEC-230)
 _V1, _V2 = "v1", "v2"
 _TABLES = {_V1: ("session", "message", "part"),
            _V2: ("session_v2", "session_message", "session_part")}
@@ -224,6 +227,22 @@ def connect_read_only(db: Path, mode: str, why: str) -> sqlite3.Connection:
     return conn
 
 
+def refuse_computed(conn: sqlite3.Connection, tables, name: str) -> None:
+    """Raise UnreadableSession when a table donediff reads is virtual or has a
+    generated column (SEC-230). Their values are computed on read, so a tiny
+    file can make every query, length checks included, build huge values;
+    a real session database has neither."""
+    for table in tables:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                           (table,)).fetchone()
+        virtual = bool(row) and isinstance(row[0], str) and \
+            row[0].lstrip()[:14].upper() == "CREATE VIRTUAL"
+        if virtual or any(col[6] in (2, 3) for col in conn.execute(f'PRAGMA table_xinfo("{table}")')):
+            raise UnreadableSession(
+                f"{name} database has a computed table or column where session data "
+                f"belongs; a real {name} database has none, so nothing was read")
+
+
 class _Conn:
     """A read-only connection, closed on exit (sqlite3's own context manager only commits)."""
 
@@ -234,9 +253,12 @@ class _Conn:
     def __enter__(self) -> sqlite3.Connection:
         try:
             self.conn = connect_read_only(self.db, _open_mode(self.db), _COPY_FAILED)
-        except sqlite3.Error as exc:
+            refuse_computed(self.conn, [t for s in _TABLES.values() for t in s], "opencode")
+        except (sqlite3.Error, UnreadableSession) as exc:
             if self.conn is not None:
                 self.conn.close()
+            if isinstance(exc, UnreadableSession):
+                raise
             raise UnreadableSession(_why(exc)) from None
         return self.conn
 
@@ -320,7 +342,8 @@ def _session_size(conn, schema: str, sid: str, base) -> tuple[int, float]:
     size = 0
     for table in (message, part):
         row = conn.execute(
-            f'SELECT COALESCE(SUM(LENGTH(data)), 0) FROM "{table}" WHERE session_id = ?',
+            f'SELECT COALESCE(SUM(LENGTH(CAST(data AS BLOB))), 0) FROM "{table}" '
+            'WHERE session_id = ?',
             (sid,)).fetchone()
         size += int(row[0] or 0)
     row = conn.execute(f'SELECT time_updated FROM "{session}" WHERE id = ?', (sid,)).fetchone()
@@ -535,14 +558,39 @@ class _Parse:
         self._hints(event)
 
 
+# A row's data, or NULL when it is over _MAX_ROW bytes (counted as unrecognised).
+_CAPPED = f"CASE WHEN LENGTH(CAST(data AS BLOB)) > {_MAX_ROW} THEN NULL ELSE data END"
+
+
+class _Budget:
+    """Rows and bytes held for one session (SEC-230): past either bound the
+    session is refused, since an unread later row could hold a failure."""
+
+    def __init__(self):
+        self.rows, self.bytes = 0, 0
+
+    def take(self, data) -> None:
+        self.rows += 1
+        self.bytes += len(data) if isinstance(data, (str, bytes)) else 0
+        if self.rows > _MAX_ROWS or self.bytes > _MAX_TOTAL:
+            raise UnreadableSession(
+                f"opencode session is larger than donediff reads ({_MAX_ROWS} rows or "
+                f"{_MAX_TOTAL // (1024 * 1024)} MiB); nothing was audited")
+
+
 def _read_v1(conn, state: _Parse, sid: str) -> None:
-    messages = conn.execute(
-        'SELECT id, time_created, data FROM "message" WHERE session_id = ? '
-        'ORDER BY time_created, id', (sid,)).fetchall()
+    budget = _Budget()
+    messages = []
+    for row in conn.execute(
+            f'SELECT id, time_created, {_CAPPED} FROM "message" WHERE session_id = ? '
+            'ORDER BY time_created, id', (sid,)):
+        budget.take(row[2])
+        messages.append(row)
     parts: dict[str, list] = {}
     for mid, created, data in conn.execute(
-            'SELECT message_id, time_created, data FROM "part" WHERE session_id = ? '
+            f'SELECT message_id, time_created, {_CAPPED} FROM "part" WHERE session_id = ? '
             'ORDER BY message_id, id', (sid,)):
+        budget.take(data)
         parts.setdefault(mid, []).append((created, data))
     for mid, created, raw in messages:
         state.row += 1
@@ -582,13 +630,18 @@ def _read_v1(conn, state: _Parse, sid: str) -> None:
 
 
 def _read_v2(conn, state: _Parse, sid: str) -> None:
-    messages = conn.execute(
-        'SELECT id, type, time_created, data FROM "session_message" WHERE session_id = ? '
-        'ORDER BY seq', (sid,)).fetchall()
+    budget = _Budget()
+    messages = []
+    for row in conn.execute(
+            f'SELECT id, type, time_created, {_CAPPED} FROM "session_message" '
+            'WHERE session_id = ? ORDER BY seq', (sid,)):
+        budget.take(row[3])
+        messages.append(row)
     parts: dict[str, list] = {}
     for mid, ptype, call_id, data in conn.execute(
-            'SELECT message_id, type, call_id, data FROM "session_part" WHERE session_id = ? '
-            'ORDER BY message_id, ordinal', (sid,)):
+            f'SELECT message_id, type, call_id, {_CAPPED} FROM "session_part" '
+            'WHERE session_id = ? ORDER BY message_id, ordinal', (sid,)):
+        budget.take(data)
         parts.setdefault(mid, []).append((ptype, call_id, data))
     for mid, mtype, created, raw in messages:
         state.row += 1

@@ -77,14 +77,14 @@ from ..shell import is_remote_path
 from .base import UnreadableSession, _absolute, _is_link, _str, pick_session
 from .base import _int as _exit
 from .codex import clean_path
-from .opencode import COPY, connect_read_only, is_database
+from .opencode import COPY, connect_read_only, is_database, refuse_computed
 
 SCHEMA_VERSION = 18  # the one tested version (session_manager.rs L33 at d8de0e789f19)
 _MAGIC = b"SQLite format 3\x00"
 _COPY_FAILED = "Goose database could not be copied for a read-only look; try again"
 _MAX_ROW = 16 * 1024 * 1024  # bytes of content_json read for one message
 _MAX_ROWS = 500_000  # messages read for one session
-_MAX_META = 64 * 1024  # characters of metadata_json read for one message (SEC-217)
+_MAX_META = 64 * 1024  # bytes of metadata_json read for one message (SEC-217)
 _MAX_TOTAL = 128 * 1024 * 1024  # content + metadata read for one session (SEC-217)
 _MS = 10_000_000_000  # created_timestamp above this is milliseconds (L36, L860)
 _DEVELOPER = "developer"
@@ -209,9 +209,12 @@ class _Conn:
     def __enter__(self) -> sqlite3.Connection:
         try:
             self.conn = connect_read_only(self.db, _open_mode(self.db), _COPY_FAILED)
-        except sqlite3.Error as exc:
+            refuse_computed(self.conn, ("schema_version", "sessions", "messages"), "Goose")
+        except (sqlite3.Error, UnreadableSession) as exc:
             if self.conn is not None:
                 self.conn.close()
+            if isinstance(exc, UnreadableSession):
+                raise
             raise UnreadableSession(_why(exc)) from None
         return self.conn
 
@@ -310,7 +313,7 @@ class SessionPath(type(Path())):
             try:
                 with _connect(Path(os.fspath(self))) as conn:
                     row = conn.execute(
-                        'SELECT COALESCE(SUM(LENGTH(content_json)), 0), MAX(created_timestamp) '
+                        'SELECT COALESCE(SUM(LENGTH(CAST(content_json AS BLOB))), 0), MAX(created_timestamp) '
                         'FROM "messages" WHERE session_id = ?', (self.session_id,)).fetchone()
                     size = int(row[0] or 0)
                     updated = _seconds(row[1]) or updated
@@ -632,12 +635,13 @@ def parse_session(path: SessionPath) -> Session:
                                   (sid,)).fetchone()[0]
             ids, read, budget, cut = [], 0, _MAX_TOTAL, stored > _MAX_ROWS
             # One row in memory at a time (SEC-217): content and metadata are
-            # capped per row, and all rows together by _MAX_TOTAL.
+            # capped per row, and all rows together by _MAX_TOTAL. Lengths are
+            # in bytes: LENGTH() of text stops at a NUL (SEC-230).
             for rowid, role, created, metadata, meta_over, raw in conn.execute(
                     'SELECT id, role, created_timestamp, '
-                    'CASE WHEN LENGTH(metadata_json) > ? THEN NULL ELSE metadata_json END, '
-                    'COALESCE(LENGTH(metadata_json) > ?, 0), '
-                    'CASE WHEN LENGTH(content_json) > ? THEN NULL ELSE content_json END '
+                    'CASE WHEN LENGTH(CAST(metadata_json AS BLOB)) > ? THEN NULL ELSE metadata_json END, '
+                    'COALESCE(LENGTH(CAST(metadata_json AS BLOB)) > ?, 0), '
+                    'CASE WHEN LENGTH(CAST(content_json AS BLOB)) > ? THEN NULL ELSE content_json END '
                     'FROM "messages" WHERE session_id = ? ORDER BY created_timestamp, id LIMIT ?',
                     (_MAX_META, _MAX_META, _MAX_ROW, sid, _MAX_ROWS)):
                 size = _size(raw) + _size(metadata)

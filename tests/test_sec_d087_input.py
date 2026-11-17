@@ -208,3 +208,100 @@ def test_damaged_database_in_auto_mode_is_a_plain_message(tmp_path, capsys):
     code = cli.main(["audit", str(path), "--no-disk-check"])
     err = capsys.readouterr().err
     assert code == 2 and "Traceback" not in err
+
+
+# -- SEC-230: SQLite size caps -------------------------------------------------
+
+def _goose_generated(tmp_path, column_sql: str) -> str:
+    import sqlite3
+    db = tmp_path / "g.db"
+    conn = sqlite3.connect(db)
+    for statement in mgo.SCHEMA[:2]:
+        conn.execute(statement)
+    conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, "
+                 "session_id TEXT NOT NULL, role TEXT NOT NULL, content_json TEXT NOT NULL, "
+                 "created_timestamp INTEGER NOT NULL, tokens INTEGER, " + column_sql + ")")
+    conn.execute("INSERT INTO schema_version (version) VALUES (18)")
+    conn.execute("INSERT INTO sessions (id, working_dir) VALUES ('20260610_1', '/home/dev/x')")
+    conn.execute("INSERT INTO messages (session_id, role, content_json, created_timestamp) "
+                 "VALUES ('20260610_1', 'assistant', '[]', 1781092800)")
+    conn.commit()
+    conn.close()
+    return str(db)
+
+
+@pytest.mark.parametrize("kind", ["VIRTUAL", "STORED"])
+def test_goose_generated_column_is_refused(tmp_path, kind):
+    from donediff.readers.base import UnreadableSession
+    db = _goose_generated(tmp_path, "metadata_json TEXT GENERATED ALWAYS AS "
+                                    f"(char(0) || printf('%.*c', 64, 'x')) {kind}")
+    with pytest.raises(UnreadableSession, match="computed"):
+        audit(db, "goose")
+
+
+def test_goose_nul_led_metadata_is_capped_in_bytes(tmp_path):
+    from donediff.readers import goose as gs
+    b = mgo.Builder(tmp_path / "g.db").session("20260610_1")
+    b.user("Run tests.")
+    b.shell("pytest -q", "3 passed", 0)
+    b.say("All tests pass.")
+    b.conn.execute("UPDATE messages SET metadata_json = ? WHERE id = 1",
+                   ("\x00" + "x" * (gs._MAX_META + 10),))
+    result = audit(b.close(), "goose")
+    assert result.session.unrecognised >= 1  # the metadata was not fetched
+
+
+def _opencode_db(tmp_path):
+    o = mo.Builder(tmp_path / "oc.db", "v1").session("ses_t0001")
+    o.user("Run tests.")
+    o.shell("pytest -q", "3 passed", 0)
+    o.say("All tests pass.")
+    return o
+
+
+def test_opencode_generated_column_is_refused(tmp_path):
+    import sqlite3
+    from donediff.readers.base import UnreadableSession
+    db = tmp_path / "o.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(mo._V1_SQL.replace(
+        "time_updated INTEGER NOT NULL, data TEXT NOT NULL);\nCREATE TABLE part",
+        "time_updated INTEGER NOT NULL, data TEXT NOT NULL);\nCREATE TABLE part", 1))
+    conn.execute("DROP TABLE part")
+    conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, "
+                 "session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER "
+                 "NOT NULL, data TEXT GENERATED ALWAYS AS (printf('%.*c', 64, 'x')) VIRTUAL)")
+    conn.execute("INSERT INTO session VALUES ('ses_t0001','p','s','/home/dev/x','t','1.0',"
+                 "1781092800000,1781092800000)")
+    conn.commit()
+    conn.close()
+    from donediff.readers import opencode as oc
+    with pytest.raises(UnreadableSession, match="computed"):
+        with oc._connect(db):
+            pass
+    # The listing treats it as unreadable: no session, nothing computed.
+    with pytest.raises(FileNotFoundError):
+        audit(f"{db}#ses_t0001", "opencode")
+
+
+def test_opencode_row_over_cap_is_skipped(tmp_path, monkeypatch):
+    from donediff.readers import opencode as oc
+    o = _opencode_db(tmp_path)
+    db = o.close()
+    monkeypatch.setattr(oc, "_CAPPED", "CASE WHEN LENGTH(CAST(data AS BLOB)) > 40 "
+                                       "THEN NULL ELSE data END")
+    result = audit(db, "opencode")
+    assert result.session.unrecognised >= 1
+
+
+def test_opencode_session_over_budget_is_refused(tmp_path, monkeypatch):
+    from donediff.readers import opencode as oc
+    from donediff.readers.base import UnreadableSession
+    db = _opencode_db(tmp_path).close()
+    monkeypatch.setattr(oc, "_MAX_TOTAL", 50)
+    with pytest.raises(UnreadableSession, match="larger than donediff reads"):
+        audit(db, "opencode")
+    monkeypatch.setattr(oc, "_MAX_TOTAL", 1 << 30)
+    monkeypatch.setattr(oc, "_MAX_ROWS", 2)
+    with pytest.raises(UnreadableSession, match="larger than donediff reads"):
+        audit(db, "opencode")
