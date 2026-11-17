@@ -278,7 +278,9 @@ def test_not_a_repository_keeps_the_transcript_verdict(tmp_path):
 
 
 def test_git_missing_keeps_the_transcript_verdict(tmp_path, monkeypatch):
-    monkeypatch.setattr(gitstate.shutil, "which", lambda name: None)
+    empty = tmp_path / "nogit"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
     plain = tmp_path / "plain"
     plain.mkdir()
     finding = one(audit(tmp_path, plain, commit_records("Add cache")

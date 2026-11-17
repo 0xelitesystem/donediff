@@ -4,7 +4,9 @@ Used only when the disk check is on and the session's project directory
 is a git work tree. The repository is not trusted: its config, hooks
 and attributes may have been written to run code. So every call:
 
-- is an argv list, never a shell, with `git -C <dir> --no-pager`;
+- is an argv list, never a shell, with `git -C <dir> --no-pager`, and
+  git is taken from an absolute PATH entry, never from the current
+  folder or the project (`find_git`);
 - turns off what config could make a read run a program: fsmonitor,
   hooks (pointed at an empty folder), external diff, signature checks
   (gpg), every clean/smudge/process filter the repository names, and
@@ -26,7 +28,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -205,6 +206,39 @@ def _refuse_network_alternates(objects: Path) -> None:
             queue.append((_local_target(directory / _windows_path(entry)), chain))
 
 
+def find_git(avoid: tuple[str, ...] = ()) -> str:
+    """The git executable from an absolute PATH entry, or "".
+
+    shutil.which("git") on Windows looks in the current folder before PATH
+    (unless NoDefaultCurrentDirectoryInExePath is set), so a git.exe shipped
+    in a cloned repository would run when donediff is started from it. Here
+    the current folder is never searched: a relative PATH entry (".", "bin"),
+    a network one, or one that names the current folder or a folder in
+    `avoid` (the project) is skipped. On Windows only git.exe is taken: a
+    git.bat or git.cmd would run through cmd.exe.
+    """
+    skip = set()
+    for folder in (os.getcwd(), *avoid):
+        try:
+            skip.add(os.path.normcase(os.path.realpath(folder)))
+        except (OSError, ValueError):
+            pass
+    name = "git.exe" if os.name == "nt" else "git"
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry) or is_remote_path(entry):
+            continue
+        try:
+            if os.path.normcase(os.path.realpath(entry)) in skip:
+                continue
+            candidate = os.path.join(entry, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return os.path.abspath(candidate)
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
 def _hardening_args(hooks: str) -> list[str]:
     """The -c settings every git call carries (filters are added per repository)."""
     return [
@@ -336,7 +370,7 @@ class GitRepo:
         if not path.is_dir():
             raise GitError("project directory not found")
         self.project = str(path.resolve())
-        self._git = shutil.which("git") or ""
+        self._git = find_git((self.project,))
         if not self._git:
             raise GitError("git not found")
         self._hooks = tempfile.TemporaryDirectory(prefix="donediff-nohooks-",
