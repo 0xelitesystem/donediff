@@ -169,3 +169,60 @@ def test_every_git_call_refuses_implicit_bare_repositories(tmp_path, monkeypatch
     assert calls
     for argv in calls:
         assert "safe.bareRepository=explicit" in argv, argv
+
+
+# -- SEC-226: a repository's protocol.ext.allow=always and a lazy fetch ----------
+
+def _lazy_fetch_repo(tmp_path: Path, marker: Path) -> tuple[Path, str]:
+    """A partial clone whose promisor remote is an ext:: command, with the session
+    commit's tree deleted so reading the commit's files needs a lazy fetch."""
+    repo = make_repo(tmp_path)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git(repo, "add", "a.py")
+    git(repo, "commit", "-q", "-m", "Add a")
+    sha = git(repo, "rev-parse", "HEAD")
+    tree = git(repo, "rev-parse", "HEAD^{tree}")
+    for key, value in (("core.repositoryformatversion", "1"),
+                       ("extensions.partialClone", "origin"),
+                       ("remote.origin.promisor", "true"),
+                       ("protocol.ext.allow", "always"),
+                       ("remote.origin.url",
+                        f"ext::sh -c echo% lazy>>{marker.as_posix()}% ;false")):
+        git(repo, "config", key, value)
+    obj = repo / ".git" / "objects" / tree[:2] / tree[2:]
+    obj.chmod(0o666)
+    obj.unlink()
+    return repo, sha
+
+
+def test_no_protocol_is_allowed_whatever_the_repository_says():
+    assert gitstate._environment()["GIT_ALLOW_PROTOCOL"] == ""
+
+
+@needs_git
+def test_lazy_fetch_through_a_repository_allowed_ext_remote_never_runs(tmp_path, monkeypatch):
+    marker = tmp_path / "lazy-fetch.txt"
+    repo, sha = _lazy_fetch_repo(tmp_path, marker)
+
+    # Control: what git before 2.44 does with protocol.allow=never and no GIT_NO_LAZY_FETCH.
+    subprocess.run([REAL_GIT, "-C", str(repo), "--no-pager", "-c", "protocol.allow=never",
+                    "show", "--name-only", "--format=", sha],
+                   env=_git_env(), capture_output=True, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git does not lazy-fetch through ext:: (setup not live)")
+    marker.unlink()
+
+    # The same environment as git before 2.44: GIT_NO_LAZY_FETCH is not known.
+    real_env = gitstate._environment
+
+    def old_git_env():
+        env = real_env()
+        env.pop("GIT_NO_LAZY_FETCH", None)
+        return env
+    monkeypatch.setattr(gitstate, "_environment", old_git_env)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        commit = gitstate.Commit(sha, 0.0, "Add a")
+        with pytest.raises(gitstate.GitError):
+            found.files_in(commit)
+    assert not marker.exists()

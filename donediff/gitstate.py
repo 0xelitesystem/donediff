@@ -68,6 +68,10 @@ def _environment() -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_LAZY_FETCH": "1",
+        # An empty allow list beats every protocol.<name>.allow in the repository's
+        # config (git 2.6+). protocol.allow=never alone loses to a repository's
+        # protocol.ext.allow=always, and git before 2.44 has no GIT_NO_LAZY_FETCH.
+        "GIT_ALLOW_PROTOCOL": "",
         "GIT_PAGER": "cat",
         "PAGER": "cat",
         "GIT_EDITOR": ":",
