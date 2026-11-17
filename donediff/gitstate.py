@@ -241,23 +241,35 @@ def find_git(avoid: tuple[str, ...] = ()) -> str:
     (unless NoDefaultCurrentDirectoryInExePath is set), so a git.exe shipped
     in a cloned repository would run when donediff is started from it. Here
     the current folder is never searched: a relative PATH entry (".", "bin"),
-    a network one, or one that names the current folder or a folder in
-    `avoid` (the project) is skipped. On Windows only git.exe is taken: a
-    git.bat or git.cmd would run through cmd.exe.
+    a network one, one that names the current folder, or one that lies
+    inside a folder in `avoid` (the project) or the work tree holding it (a
+    subfolder too, as 0.4.2 does) is skipped. On Windows only git.exe is
+    taken: a git.bat or git.cmd would run through cmd.exe.
     """
     skip = set()
-    for folder in (os.getcwd(), *avoid):
+    try:
+        skip.add(os.path.normcase(os.path.realpath(os.getcwd())))
+    except (OSError, ValueError):
+        pass
+    untrusted = []
+    for folder in avoid:
         try:
-            skip.add(os.path.normcase(os.path.realpath(folder)))
+            real = Path(os.path.normcase(os.path.realpath(folder)))
         except (OSError, ValueError):
-            pass
+            continue
+        untrusted.append(real)
+        root = next((d for d in (real, *real.parents) if os.path.lexists(d / ".git")), None)
+        if root is not None:
+            untrusted.append(root)
     name = "git.exe" if os.name == "nt" else "git"
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         entry = entry.strip().strip('"')
         if not entry or not os.path.isabs(entry) or is_remote_path(entry):
             continue
         try:
-            if os.path.normcase(os.path.realpath(entry)) in skip:
+            real_entry = os.path.normcase(os.path.realpath(entry))
+            if real_entry in skip or any(Path(real_entry).is_relative_to(folder)
+                                         for folder in untrusted):
                 continue
             candidate = os.path.join(entry, name)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
