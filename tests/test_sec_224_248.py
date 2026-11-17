@@ -226,3 +226,89 @@ def test_lazy_fetch_through_a_repository_allowed_ext_remote_never_runs(tmp_path,
         with pytest.raises(gitstate.GitError):
             found.files_in(commit)
     assert not marker.exists()
+
+
+# -- SEC-227: a commit subject that forges a log record and injects an option ----
+
+_SEPARATORS = {"u2028": "\u2028", "u2029": "\u2029", "x1c": "\x1c", "x1d": "\x1d",
+               "x1e": "\x1e", "x85": "\x85", "cr": "\r", "x0b": "\x0b", "x0c": "\x0c",
+               "lf": "\n"}
+_EPOCH_IN_SESSION = "1781092800"  # 2026-06-10T12:00:00Z
+
+
+def _commit_raw_message(repo: Path, message: str) -> str:
+    """A commit whose message is kept byte for byte (commit-tree, no cleanup)."""
+    (repo / "z.py").write_text("z = 1\n", encoding="utf-8")
+    git(repo, "add", "z.py")
+    tree = git(repo, "write-tree")
+    done = subprocess.run([REAL_GIT, "-C", str(repo), "commit-tree", tree, "-p", "HEAD",
+                           "-F", "-"], input=message.encode("utf-8"), capture_output=True,
+                          check=True, env=_git_env())
+    sha = done.stdout.decode().strip()
+    git(repo, "update-ref", "refs/heads/main", sha)
+    return sha
+
+
+@needs_git
+@pytest.mark.parametrize("sep", sorted(_SEPARATORS))
+def test_subject_cannot_forge_a_commit_or_inject_an_option(tmp_path, sep):
+    repo = make_repo(tmp_path)
+    target = tmp_path / f"written-by-git-{sep}.txt"
+    forged = f"--output={target.as_posix()}"
+    subject = f"tidy{_SEPARATORS[sep]}{forged}\x1f{_EPOCH_IN_SESSION}\x1fforged"
+    sha = _commit_raw_message(repo, subject)
+    start, end = 1781092800 - 3600, 1781092800 + 3600
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        commits = found.commits_between(start, end)
+        for commit in commits:
+            found.files_in(commit)
+        found.files_in(gitstate.Commit(forged, 1781092800.0, "x"))  # never reaches argv
+    assert not target.exists()
+    real = git(repo, "rev-list", "--all").split()
+    assert sha in real and len(real) == 2
+    assert sorted(c.sha for c in commits) == sorted(real)  # no forged record
+    assert next(c for c in commits if c.sha == sha).subject.startswith("tidy")
+    assert all(gitstate._FULL_SHA.fullmatch(c.sha) for c in commits)
+
+
+@needs_git
+def test_files_in_puts_end_of_options_before_the_commit(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    sha = git(repo, "rev-parse", "HEAD")
+    calls = _spy_popen(monkeypatch)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.files_in(gitstate.Commit(sha, 0.0, "Initial")) == {"README.md"}
+        found.has_commit(sha[:8])
+        found.commits_between(0, 2 ** 31)
+    shows = [a for a in calls if "show" in a or "cat-file" in a or "log" in a]
+    assert len(shows) == 3
+    for argv in shows:
+        assert argv[-2] == "--end-of-options", argv
+
+
+@needs_git
+def test_remote_ref_name_with_a_line_separator_stays_one_name(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = git(repo, "rev-parse", "HEAD")
+    name = "origin/x\u2028origin/main"
+    try:
+        git(repo, "update-ref", f"refs/remotes/{name}", sha)
+    except subprocess.CalledProcessError:
+        pytest.skip("this file system cannot hold the ref name")
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.remote_refs() == [name]
+        assert found.remote_branches_containing(sha) == [name]
+
+
+@needs_git
+def test_project_folder_name_with_a_line_separator_is_the_toplevel(tmp_path):
+    try:
+        base = tmp_path / "a\u2028b"
+        base.mkdir()
+    except OSError:
+        pytest.skip("this file system cannot hold the folder name")
+    repo = make_repo(base)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        assert Path(found.toplevel) == repo.resolve()
