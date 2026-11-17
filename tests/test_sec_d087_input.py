@@ -671,3 +671,20 @@ def test_engine_keeps_the_real_wsl_path(tmp_path, capsys):
     assert "alice" not in capsys.readouterr().out
     assert cli.main(["audit", path, "--no-disk-check", "--json", "--full-paths"]) == 0
     assert "/mnt/c/Users/alice/proj" in capsys.readouterr().out
+
+
+# -- stack 0.5.0: SEC-228 caps hold in the SEC-221 and SEC-232 code ------------
+
+def test_overlong_literal_exit_code_is_a_failure_not_a_crash():
+    from donediff.evidence import _failing_stage, _fails_in
+    assert _failing_stage("exit " + HUGE) is True
+    assert _fails_in("if x; then exit " + HUGE + "; fi") is True
+    assert _failing_stage("exit 256") is False
+
+
+def test_overlong_background_notice_code_is_a_failure():
+    from donediff.parser import background_done
+    notice = ("<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n"
+              "<status>completed</status>\n<summary>finished with exit code " + HUGE
+              + "</summary>\n</task-notification>")
+    assert background_done(notice) == (["t1", "b1"], 1)

@@ -310,7 +310,7 @@ def _failing_stage(stage: str) -> bool:
         return False
     code = match.group(1)
     return code is None or (re.fullmatch(r"-?\d+", code) is not None
-                            and int(code) % 256 != 0)
+                            and log_int(code, 1) % 256 != 0)  # overlong: fails (SEC-228)
 
 
 def _fails_again(statements) -> bool:
@@ -358,7 +358,7 @@ def _fails_in(text: str) -> bool:
         if match.group(2):
             return True
         code = match.group(1)
-        if code is None or (re.fullmatch(r"-?\d+", code) and int(code) % 256 != 0):
+        if code is None or (re.fullmatch(r"-?\d+", code) and log_int(code, 1) % 256 != 0):
             return True
     return False
 
