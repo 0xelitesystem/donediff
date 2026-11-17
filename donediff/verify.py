@@ -481,13 +481,36 @@ def _rewound_cap(timeline: Timeline, kind: ClaimType, run_key: tuple, ctx: _Cont
                   f"a later run was rewound ({how}): `{_short(failed.command)}`", failed)
 
 
+def _has_folder(detail: str) -> bool:
+    """True when a claimed path names a folder (`src/app.py`), not a bare name."""
+    return "/" in detail.replace("\\", "/").strip("/")
+
+
+def _same_claimed_file(write_path: str, write_base: str, detail: str, cwd: str) -> bool:
+    """A write to the claimed file: a bare name matches any folder; a path
+    with a folder must be the same path, or end with it (SEC-223)."""
+    if not _has_folder(detail):
+        return base_name(write_path) == base_name(detail)
+    a = norm_path(write_path, norm_path(write_base) if write_base else None)
+    b = norm_path(detail, norm_path(cwd) if cwd else None)
+    if a is not None and a == b:
+        return True
+    tail = detail.replace("\\", "/").lower()
+    while tail.startswith("./"):
+        tail = tail[2:]
+    if tail.startswith("/") or ":" in tail or ".." in tail.split("/"):
+        return False  # absolute or climbing: only the exact path above counts
+    return ("/" + write_path.replace("\\", "/").lower()).endswith("/" + tail)
+
+
 def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
-    """Write/Edit calls before the claim to a file with the claimed name."""
-    name = base_name(claim.detail)
+    """Write/Edit calls before the claim to the claimed file: the same path
+    when the claim names a folder, else the same file name."""
+    cwd = timeline.session.cwd
     return [
         e for e in timeline.writes_before(ctx.key, ctx.restrict)
         if e.tool_action in (WRITE, EDIT, NOTEBOOK_EDIT)
-        and base_name(e.file_path) == name
+        and _same_claimed_file(e.file_path, e.cwd or cwd, claim.detail, cwd)
     ]
 
 
@@ -498,8 +521,9 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
     name = base_name(claim.detail)
     writes = _matching_writes(timeline, claim, ctx)
     if not writes:
+        shown = claim.detail if _has_folder(claim.detail) else name
         return _unverified(claim, ctx,
-                           f"no Write/Edit call for `{name}` appears before the claim")
+                           f"no Write/Edit call for `{shown}` appears before the claim")
     done = [w for w in writes if evidence_of_success(w)[0]]
     if not done:
         return _failed_write(claim, ctx, writes, name)
@@ -508,7 +532,11 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
     if check_disk and session.cwd:
         candidates, skipped = _local_candidates(session, claim, writes)
         on_disk = any(p.exists() for p in candidates)
-        if not on_disk and skipped:
+        # A claimed path with a folder that lies inside the project was checked
+        # and is absent: a write elsewhere does not make it exist (SEC-223).
+        claimed_checked = _has_folder(claim.detail) and _confine(
+            claim.detail, session.cwd, session.cwd, set()) is not None
+        if not on_disk and skipped and not claimed_checked:
             return _found(claim, ctx, Verdict.VERIFIED,
                           f"{last.tool_name} call for `{name}` found; {_not_checked(skipped)}", last)
         if not on_disk:
