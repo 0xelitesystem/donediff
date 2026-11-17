@@ -737,6 +737,49 @@ def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
 
 
 @needs_git
+@pytest.mark.skipif(shutil.which("git") is None or _git_version() < (2, 50),
+                    reason="config-defined hooks need git 2.50+")
+def test_config_defined_hooks_are_turned_off_by_name(tmp_path):
+    """SEC-248: `hook.<name>.command` hooks (git 2.50+) are not reached by an empty
+    core.hooksPath. Each is turned off by name on every call. No donediff command writes
+    the index, so the proof runs status with donediff's argv but with optional locks on,
+    which lets git write the index and fire post-index-change."""
+    repo = make_repo(tmp_path)
+    marker = tmp_path / "marker.txt"
+    run = f"sh '{_evil_script(tmp_path, marker).as_posix()}' </dev/null"
+    git(repo, "config", "hook.ev.command", run)
+    git(repo, "config", "hook.ev.event", "post-index-change")
+    git(repo, "config", "hook.a.b.command", run)
+    git(repo, "config", "hook.a.b.event", "post-index-change")
+    index = (repo / ".git" / "index").read_bytes()
+
+    def dirty():
+        (repo / ".git" / "index").write_bytes(index)
+        stat = (repo / "README.md").stat()
+        os.utime(repo / "README.md", (stat.st_atime + 100, stat.st_mtime + 100))
+
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    dirty()
+    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                   capture_output=True, env=env, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git did not fire the config-defined hook under plain status")
+    marker.unlink()
+
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        dirty()
+        env = gitstate._environment()
+        env.update(found._filter_environment())
+        del env["GIT_OPTIONAL_LOCKS"]
+        subprocess.run([found._git, "-C", found.project, "--no-pager",
+                        *found._config_args(), "status", "--porcelain"],
+                       capture_output=True, env=env, timeout=60)
+        assert not marker.exists()
+        assert found._config_hooks == ["a.b", "ev"]
+
+
+@needs_git
 def test_filter_overrides_also_travel_in_the_environment(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     git(repo, "config", "filter.evil.clean", "false")

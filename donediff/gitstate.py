@@ -8,7 +8,8 @@ and attributes may have been written to run code. So every call:
   git is found only in absolute PATH entries that are not the current
   folder and not inside the project (never a git shipped in the repo);
 - turns off what config could make a read run a program: fsmonitor,
-  hooks (pointed at an empty folder), external diff, signature checks
+  hooks (pointed at an empty folder, and every config-defined hook
+  turned off by name), external diff, signature checks
   (gpg), every clean/smudge/process filter the repository names, and
   every network transport (`protocol.allow=never`, an empty
   GIT_ALLOW_PROTOCOL, no lazy fetch);
@@ -362,6 +363,7 @@ class GitRepo:
         self._git = ""
         self._hooks: tempfile.TemporaryDirectory | None = None
         self._filters: list[str] = []
+        self._config_hooks: list[str] = []
         self._has_head = False
         self._commits: dict[tuple[int, int], list[Commit]] = {}
         self._files: dict[str, set[str]] = {}
@@ -424,6 +426,18 @@ class GitRepo:
         if any("=" in name or "\n" in name or "\0" in name for name in names):
             raise GitError("repository names a filter that cannot be turned off")
         self._filters = sorted(names)
+        # Names of every config-defined hook (`hook.<name>.command`, git 2.50+): an empty
+        # core.hooksPath does not reach these, so each is turned off by name.
+        code, out = self._run(["config", "-z", "--name-only", "--get-regexp",
+                               r"^hook\..*\.command$"], check=False)
+        hooks = set()
+        for entry in out.split("\0"):
+            first, _, rest = entry.strip("\n").partition(".")
+            if first.lower() == "hook" and "." in rest:
+                hooks.add(rest.rsplit(".", 1)[0])
+        if any("=" in name or "\n" in name or "\0" in name for name in hooks):
+            raise GitError("repository names a hook that cannot be turned off")
+        self._config_hooks = sorted(hooks)
         code, _ = self._run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], check=False)
         self._has_head = code == 0
 
@@ -439,14 +453,17 @@ class GitRepo:
             for key in ("clean", "smudge", "process"):
                 args += ["-c", f"filter.{name}.{key}="]
             args += ["-c", f"filter.{name}.required=false"]
+        for name in self._config_hooks:
+            args += ["-c", f"hook.{name}.enabled=false"]
         return args
 
     def _filter_environment(self) -> dict[str, str]:
-        """The filter overrides again as GIT_CONFIG_COUNT/KEY/VALUE (git 2.31+):
+        """The filter and hook overrides again as GIT_CONFIG_COUNT/KEY/VALUE (git 2.31+):
         key and value travel apart, so no name can be split into another key."""
         pairs = [(f"filter.{name}.{key}", "") for name in self._filters
                  for key in ("clean", "smudge", "process")]
         pairs += [(f"filter.{name}.required", "false") for name in self._filters]
+        pairs += [(f"hook.{name}.enabled", "false") for name in self._config_hooks]
         env = {"GIT_CONFIG_COUNT": str(len(pairs))} if pairs else {}
         for i, (key, value) in enumerate(pairs):
             env[f"GIT_CONFIG_KEY_{i}"] = key
