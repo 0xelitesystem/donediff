@@ -39,8 +39,10 @@ branch main at commit 4ed06ed0ddc5; the format is internal and moves):
   new_string) an edit; every other tool is kept under its own name.
 - Retention: Gemini deletes sessions older than 30 days by default.
 
-Lines are read in binary, one at a time, capped at MAX_LINE bytes; a longer
-line, a line that is not JSON, a record this reader does not know and a
+Lines are read in binary, one at a time, capped at MAX_LINE bytes (an older
+one-document .json session at MAX_JSON); parser.loads also refuses a line or
+document with more than MAX_VALUES values, so memory stays near a few times
+the text (SEC-241). A longer line, a line that is not JSON, a record this reader does not know and a
 message type it does not know are skipped and counted in Session.unrecognised.
 The reader starts no process and makes no network call; paths it reads from
 the log are checked later through donediff.shell.confined like every other

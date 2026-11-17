@@ -359,3 +359,51 @@ def test_subagent_file_over_cap_is_not_read(tmp_path, monkeypatch):
     result = audit(main, "claude-code")
     assert result.session.unrecognised == 1
     assert all(not s.events for s in result.session.sources)
+
+
+# -- SEC-241: byte caps are not allocation caps ---------------------------------
+
+def test_too_many_values_counts_outside_strings():
+    from donediff.parser import MAX_VALUES, too_many_values
+    bomb = "[" + "{}," * (MAX_VALUES + 10) + "{}]"
+    assert too_many_values(bomb) and too_many_values(bomb.encode())
+    prose = json.dumps({"text": "a, b, [c], {d}, \\\"e\\\", " * 200_000})
+    assert len(prose) > 1024 * 1024 and not too_many_values(prose)
+
+
+def test_loads_refuses_a_value_bomb_as_value_error():
+    from donediff.parser import MAX_VALUES, loads
+    with pytest.raises(ValueError):
+        loads("[" + "{}," * (MAX_VALUES + 10) + "{}]")
+
+
+def _bomb_record(record: dict) -> str:
+    from donediff.parser import MAX_VALUES
+    text = json.dumps(record)
+    return text[:-1] + ', "pad": [' + "{}," * (MAX_VALUES + 10) + "{}]}"
+
+
+def test_cline_value_bomb_is_unreadable(tmp_path):
+    from donediff.readers.base import UnreadableSession
+    doc = ml.Doc()
+    doc.user("x")
+    doc.assistant("All tests pass.")
+    path = tmp_path / f"{ml.SID}.messages.json"
+    path.write_text(_bomb_record(doc.document()))
+    with pytest.raises(UnreadableSession):
+        audit(path, "cline")
+
+
+def test_gemini_value_bomb_line_is_skipped(tmp_path):
+    c = mg.Clock()
+    path = tmp_path / "session-2026-06-10T12-00-6f1c2d3e.jsonl"
+    path.write_text(json.dumps(mg.meta()) + "\n" + _bomb_record(mg.gemini(c, "g2", "Done.")) + "\n")
+    result = audit(path, "gemini")
+    assert result.session.unrecognised == 1
+
+
+def test_claude_code_value_bomb_line_is_skipped(tmp_path):
+    path = tmp_path / "s.jsonl"
+    lines = [l.decode() for l in _cc_lines()]
+    path.write_text(_bomb_record(json.loads(lines[0])) + "\n" + "\n".join(lines[1:]) + "\n")
+    assert audit(path, "claude-code").session.unrecognised == 1

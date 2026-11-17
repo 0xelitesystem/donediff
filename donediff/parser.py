@@ -55,13 +55,39 @@ def lines(fh, limit: int):
         yield line
 
 
+# A byte cap is no allocation cap: "[{},{},...]" costs about 30 times its
+# size once parsed. A document over _COUNT_FROM bytes is refused when it
+# holds more than MAX_VALUES values (SEC-241). With strings cut out, every
+# value adds one "," "[" or "{", so the count is exact enough to bound the
+# parse at about MAX_VALUES * 200 bytes plus the text itself; real logs hold
+# far fewer values for their size (prose, code and output are strings).
+MAX_VALUES = 1_000_000
+_COUNT_FROM = 1024 * 1024
+_STRING = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"')
+_STRING_BYTES = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+
+
+def too_many_values(text) -> bool:
+    """True when a JSON text (str or bytes) over _COUNT_FROM holds more than MAX_VALUES values."""
+    if len(text) < _COUNT_FROM:
+        return False
+    if isinstance(text, str):
+        bare = _STRING.sub("", text)
+        return bare.count(",") + bare.count("[") + bare.count("{") > MAX_VALUES
+    bare = _STRING_BYTES.sub(b"", text)
+    return bare.count(b",") + bare.count(b"[") + bare.count(b"{") > MAX_VALUES
+
+
 def loads(text):
-    """json.loads, with a too-deep document raised as ValueError (SEC-207).
+    """json.loads, with a too-deep document raised as ValueError (SEC-207)
+    and one with too many values for its size likewise (SEC-241).
 
     The one place donediff parses JSON: every caller's `except ValueError`
     then counts a nested-bomb line as unreadable instead of crashing. A
     guard test fails if a bare json.loads or json.load appears elsewhere.
     """
+    if too_many_values(text):
+        raise ValueError("JSON holds too many values")
     try:
         return json.loads(text)
     except RecursionError as exc:

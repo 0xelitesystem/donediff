@@ -56,7 +56,9 @@ commit 146894b6a42a; the format is internal and moves):
   reader) is what catches an edit that is no longer there.
 
 The file is read in binary, capped at MAX_FILE bytes; a file that is larger
-or not JSON is an unreadable session (reported, not a crash). A message or
+or not JSON is an unreadable session (reported, not a crash). Memory is about
+three times the file (bytes, text, parsed strings) plus the parsed values,
+which parser.loads caps at MAX_VALUES (SEC-241). A message or
 block this reader does not know is skipped and counted in
 Session.unrecognised. The reader starts no process and makes no network call;
 paths it reads from the log are checked later through donediff.shell.confined
