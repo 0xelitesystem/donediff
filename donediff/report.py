@@ -13,9 +13,11 @@ from .models import AuditResult, Finding, GamingSeverity, GamingSignal, Session,
 from .redact import redact_secrets
 
 # Control characters that a terminal would act on instead of showing:
-# C0 (except tab and newline), DEL, C1, and bidi overrides/isolates.
+# every C0 (newline and tab too: each rendered field is one line, so a
+# newline in a file name or cwd from the log cannot forge a report line,
+# SEC-237), DEL, C1, and bidi overrides/isolates.
 _UNSAFE_CHARS = re.compile(
-    r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]"
+    r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]"
 )
 
 
