@@ -33,7 +33,13 @@ What is masked:
   "Bearer <token>" of 16 or more characters, quoted or not.
 * Tokens with a known prefix (sk-, ghp_, AKIA, ...) followed by 12 or
   more token characters. The prefix is kept.
+* JSON Web Tokens (eyJ...), PEM private key bodies (the BEGIN and END
+  lines stay) and Slack webhook URLs (the path after /services/).
 * The password in scheme://user:password@host.
+
+Not masked, by design of a pattern masker: a secret with no name and no
+known prefix (a bare AWS secret key), and a secret that is base64 or URL
+encoded or split across lines.
 
 $NAME and ${NAME} are variable references, not assignments, and a value
 that starts with $ is a reference too; both stay readable.
@@ -87,9 +93,19 @@ _SCHEME_VALUE = re.compile(_SCHEME + r"[ \t]+[^\s$]\S*", re.IGNORECASE)
 # readable. The prefix is kept so the reader still sees what kind of
 # credential it was.
 _TOKEN_PREFIX = re.compile(
-    r"\b(sk_live_|sk-|rk_|gh[pousr]_|github_pat_|glpat-|xox[abprs]-"
-    r"|AIza|AKIA|ASIA)[A-Za-z0-9_\-]{12,}"
+    r"\b(sk_live_|sk_test_|sk-|rk_|whsec_|gh[pousr]_|github_pat_|glpat-|xox[abprse]-|xapp-"
+    r"|AIza|AKIA|ASIA|ya29\.|SG\.)[A-Za-z0-9_\-]{12,}(?:\.[A-Za-z0-9_\-]{12,})?"
 )
+# npm_ and hf_ also start ordinary names (npm_config_cache), so they count
+# only before a long run of letters and digits with no underscore (SEC-236).
+_TOKEN_PREFIX_STRICT = re.compile(r"\b(npm_|hf_)[A-Za-z0-9]{30,}\b")
+# A JSON Web Token: three base64url parts, the first two starting eyJ.
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+# A PEM private key: the body between its BEGIN and END lines (or the end).
+_PEM = re.compile(r"(-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----)[\s\S]*?"
+                  r"(-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|\Z)")
+# A Slack incoming-webhook URL: the path after /services/ is the secret.
+_SLACK_HOOK = re.compile(r"(hooks\.slack\.com/services/)[A-Za-z0-9/_-]+")
 
 # A name and its separator: NAME=value, NAME: value, "name": "value"
 # (also with the quotes escaped, as JSON inside a shell string),
@@ -272,7 +288,11 @@ def _mask_token(match: re.Match) -> str:
 
 def redact_secrets(text: str) -> str:
     """Replace credential values in `text` with ***; leave the rest as is."""
+    text = _PEM.sub(r"\1" + _MASK + r"\2", text)
+    text = _SLACK_HOOK.sub(r"\1" + _MASK, text)
+    text = _JWT.sub("eyJ" + _MASK, text)
     text = _URL_CREDENTIALS.sub(r"\1" + _MASK + "@", text)
     text = _AUTH_HEADER.sub(_mask_header, text)
     text = _redact_assignments(text)
+    text = _TOKEN_PREFIX_STRICT.sub(_mask_token, text)
     return _TOKEN_PREFIX.sub(_mask_token, text)
