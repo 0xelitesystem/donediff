@@ -33,11 +33,12 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
 
 from . import __version__
 from .claims import extract_claims
@@ -118,6 +119,25 @@ def _cannot_write(where: str, exc: OSError) -> int:
     return 2
 
 
+def _write_report(target: str, text: str) -> None:
+    """Write a report file through a temp file beside it, renamed into place,
+    so a failed write leaves no empty or partial report (SEC-240). Text a log
+    could not encode (a lone surrogate) is written as "?", never raised."""
+    data = text.encode("utf-8", errors="replace")
+    folder = os.path.dirname(os.path.abspath(target))
+    fd, temp = tempfile.mkstemp(prefix=".donediff-", suffix=".tmp", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(temp, target)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     try:
         result = run_audit(args.target, args.project, check_disk=not args.no_disk_check,
@@ -130,8 +150,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     # traceback and never exit 1, which means "below --fail-under" (QA-025).
     if args.md:
         try:
-            Path(args.md).write_text(render_markdown(result, full_paths=args.full_paths),
-                                     encoding="utf-8")
+            _write_report(args.md, render_markdown(result, full_paths=args.full_paths))
         except OSError as exc:
             return _cannot_write(args.md, exc)
     try:

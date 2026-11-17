@@ -407,3 +407,37 @@ def test_claude_code_value_bomb_line_is_skipped(tmp_path):
     lines = [l.decode() for l in _cc_lines()]
     path.write_text(_bomb_record(json.loads(lines[0])) + "\n" + "\n".join(lines[1:]) + "\n")
     assert audit(path, "claude-code").session.unrecognised == 1
+
+
+# -- SEC-240: a lone surrogate in log text and --md ------------------------------
+
+def _surrogate_transcript(tmp_path):
+    path = tmp_path / "surr.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in (
+        assistant_tool("t1", "Bash", {"command": "pytest -q"}),
+        tool_result("t1", "3 passed in 0.1s"),
+        assistant_text("All tests pass in \ud800."))), encoding="utf-8")
+    return path
+
+
+def test_surrogate_in_markdown_report_is_written(tmp_path, capsys):
+    md = tmp_path / "r.md"
+    code = cli.main(["audit", str(_surrogate_transcript(tmp_path)), "--no-disk-check",
+                     "--md", str(md)])
+    out = capsys.readouterr()
+    assert code == 0 and "Traceback" not in out.err
+    assert md.stat().st_size > 0 and "All tests pass in ?." in md.read_text(encoding="utf-8")
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".donediff-")] == []
+
+
+def test_failed_markdown_write_leaves_no_file(tmp_path, monkeypatch, capsys):
+    md = tmp_path / "r.md"
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(cli.os, "replace", boom)
+    code = cli.main(["audit", str(_surrogate_transcript(tmp_path)), "--no-disk-check",
+                     "--md", str(md)])
+    assert code == 2 and "cannot write" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == [tmp_path / "surr.jsonl"]
