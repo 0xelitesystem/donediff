@@ -569,3 +569,59 @@ def test_private_copy_folder_is_owner_only(tmp_path, monkeypatch):
         assert "(I)" not in acl  # nothing inherited from the shared temp folder
     finally:
         oc.drop_copies()
+
+
+# -- SEC-218 (A8): side files decide copy or direct, not the header ---------------
+
+def _rollback_header(db: Path) -> None:
+    data = bytearray(db.read_bytes())
+    data[18] = data[19] = 1  # the header says rollback journal
+    db.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize("module, name", [("opencode", "opencode"), ("goose", "Goose")])
+def test_rollback_header_with_side_files(tmp_path, module, name):
+    import importlib
+    from donediff.readers import opencode as oc
+    from donediff.readers.base import UnreadableSession
+    reader = importlib.import_module(f"donediff.readers.{module}")
+    db = tmp_path / "x.db"
+    db.write_bytes(b"SQLite format 3\x00" + bytes(84))
+    _rollback_header(db)
+    assert reader._open_mode(db) == "?mode=ro"
+    (tmp_path / "x.db-wal").write_bytes(b"frames")
+    with pytest.raises(UnreadableSession, match=f"{name} database has an unfinished write log"):
+        reader._open_mode(db)  # a lone -wal: refused, as with a WAL header
+    (tmp_path / "x.db-shm").write_bytes(b"index")
+    assert reader._open_mode(db) == oc.COPY  # read from a private copy, never in place
+
+
+def test_goose_rollback_header_with_live_wal_leaves_the_folder_untouched(tmp_path):
+    import shutil
+    import sqlite3
+    from donediff.readers.base import UnreadableSession
+    live = tmp_path / "live"
+    live.mkdir()
+    b = mgo.Builder(live / "sessions.db")
+    b.conn.commit()
+    b.conn.execute("PRAGMA journal_mode=WAL")
+    b.session("20260610_1")
+    b.user("Run tests.")
+    b.shell("pytest -q", "3 passed", 0)
+    b.say("All tests pass.")
+    b.close()
+    writer = sqlite3.connect(live / "sessions.db")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("INSERT INTO messages (session_id, role, content_json, created_timestamp) "
+                   "VALUES ('20260610_1', 'assistant', '[]', 1781099999)")
+    writer.commit()
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    shutil.copyfile(live / "sessions.db", copy / "sessions.db")
+    shutil.copyfile(live / "sessions.db-wal", copy / "sessions.db-wal")
+    writer.close()
+    _rollback_header(copy / "sessions.db")
+    before = sorted(p.name for p in copy.iterdir())
+    with pytest.raises(UnreadableSession):
+        audit(f"{copy / 'sessions.db'}#20260610_1", "goose")
+    assert sorted(p.name for p in copy.iterdir()) == before  # no -shm written

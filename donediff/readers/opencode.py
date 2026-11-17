@@ -374,22 +374,31 @@ def _open_mode(db: Path) -> str:
     would create -shm: refuse it, so a missed later failure can never turn into
     a pass.
     """
+    return open_mode(db, "opencode")
+
+
+def open_mode(db: Path, name: str) -> str:
+    """The open mode for a Goose or opencode database (see their _open_mode).
+
+    The side files decide first, the header second (SEC-218): SQLite opens a
+    -wal it finds even when the header says rollback, and then writes a -shm
+    beside it. So a -wal with a -shm is always read from a private copy, and
+    a lone -wal is always refused, whatever the header's journal mode.
+    """
+    base = os.fspath(db)
+    has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
+    if has_wal and has_shm:
+        return COPY
+    if has_wal:
+        raise UnreadableSession(f"{name} database has an unfinished write log; "
+                                f"start and close {name} once, then try again")
     try:
         with open(db, "rb") as fh:
             header = fh.read(20)
     except OSError:
         return "?mode=ro"
     is_wal = len(header) == 20 and header[:16] == _MAGIC and header[18] == 2 and header[19] == 2
-    if not is_wal:
-        return "?mode=ro"
-    base = os.fspath(db)
-    has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
-    if has_wal and has_shm:
-        return COPY
-    if has_wal:
-        raise UnreadableSession("opencode database has an unfinished write log; "
-                                "start and close opencode once, then try again")
-    return "?mode=ro&immutable=1"
+    return "?mode=ro&immutable=1" if is_wal else "?mode=ro"
 
 
 def _connect(db: Path) -> _Conn:

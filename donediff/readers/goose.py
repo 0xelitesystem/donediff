@@ -78,10 +78,9 @@ from ..shell import is_remote_path
 from .base import UnreadableSession, _absolute, _is_link, _str, pick_session
 from .base import _int as _exit
 from .codex import clean_path
-from .opencode import COPY, connect_read_only, is_database, refuse_computed
+from .opencode import connect_read_only, is_database, open_mode, refuse_computed
 
 SCHEMA_VERSION = 18  # the one tested version (session_manager.rs L33 at d8de0e789f19)
-_MAGIC = b"SQLite format 3\x00"
 _COPY_FAILED = "Goose database could not be copied for a read-only look; try again"
 _MAX_ROW = 16 * 1024 * 1024  # bytes of content_json read for one message
 _MAX_ROWS = 500_000  # messages read for one session
@@ -176,21 +175,7 @@ def _open_mode(db: Path) -> str:
     goes to a private temp copy (SEC-218). A lone -wal is refused: an immutable
     read would miss its writes, and a missed failure must never become a pass.
     """
-    try:
-        with open(db, "rb") as fh:
-            header = fh.read(20)
-    except OSError:
-        return "?mode=ro"
-    if not (len(header) == 20 and header[:16] == _MAGIC and header[18] == 2 and header[19] == 2):
-        return "?mode=ro"
-    base = os.fspath(db)
-    has_wal, has_shm = os.path.exists(base + "-wal"), os.path.exists(base + "-shm")
-    if has_wal and has_shm:
-        return COPY
-    if has_wal:
-        raise UnreadableSession("Goose database has an unfinished write log; "
-                                "start and close Goose once, then try again")
-    return "?mode=ro&immutable=1"
+    return open_mode(db, "Goose")
 
 
 def _why(exc: sqlite3.Error) -> str:
