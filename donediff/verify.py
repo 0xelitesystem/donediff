@@ -47,7 +47,7 @@ from .models import (
 )
 from .parser import epoch
 from .redact import redact_secrets
-from .shell import confined, is_remote_path, norm_path, run_directory, windows_drive
+from .shell import base_name, confined, is_remote_path, norm_path, run_directory, windows_drive
 
 RELAYED_REASON = "relayed from an agent's report, no command result seen"
 MASKED_REASON = "exit code hidden by a pipe and output does not show the result"
@@ -316,7 +316,7 @@ def _verify_command_claim(timeline: Timeline, claim: Claim, ctx: _Context,
                                lambda stage: kind in stage_types(stage))
         edits_after = timeline.edits_between(run_key, ctx.key, ctx.restrict, folder)
         if edits_after:
-            files = {Path(e.file_path).name for e in edits_after if e.file_path}
+            files = {base_name(e.file_path) for e in edits_after if e.file_path}
             listed = ", ".join(sorted(files)[:3]) or f"{len(edits_after)} files"
             return _found(claim, ctx, Verdict.STALE,
                           f"`{_short(run.command)}` passed, but {listed} "
@@ -480,11 +480,11 @@ def _rewound_cap(timeline: Timeline, kind: ClaimType, run_key: tuple, ctx: _Cont
 
 def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Event]:
     """Write/Edit calls before the claim to a file with the claimed name."""
-    name = Path(claim.detail).name
+    name = base_name(claim.detail)
     return [
         e for e in timeline.writes_before(ctx.key, ctx.restrict)
         if e.tool_action in (WRITE, EDIT, NOTEBOOK_EDIT)
-        and Path(e.file_path).name == name
+        and base_name(e.file_path) == name
     ]
 
 
@@ -492,7 +492,7 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
                          check_disk: bool) -> Finding:
     """A file the claim says was created or edited: written in-session, on disk."""
     session = timeline.session
-    name = Path(claim.detail).name
+    name = base_name(claim.detail)
     writes = _matching_writes(timeline, claim, ctx)
     if not writes:
         return _unverified(claim, ctx,

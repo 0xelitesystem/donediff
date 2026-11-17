@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # Programs whose job is to page or filter output. As the last stage of a
 # pipeline they decide its exit status (without pipefail), so a failing
@@ -290,6 +290,16 @@ def confined(path, root) -> Path | None:
     if is_remote_path(resolved):
         return None
     return resolved if resolved == base or resolved.is_relative_to(base) else None
+
+
+def base_name(path) -> str:
+    """The file name of a path from the log, split at / and \\ on every OS.
+
+    A transcript written on Windows names C:\\proj\\a.py; audited on Linux or
+    macOS, Path(...).name would return the whole string, so the same log
+    would get a different verdict there.
+    """
+    return PurePosixPath(str(path).replace("\\", "/")).name
 
 
 def windows_drive(path: str) -> str:

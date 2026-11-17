@@ -17,6 +17,7 @@ from pathlib import Path
 from .evidence import masking
 from .models import EDIT, MULTI_EDIT, WRITE, Event, EventKind, GamingSeverity, GamingSignal, Session
 from .redact import redact_secrets
+from .shell import base_name
 
 _TEST_FILE = re.compile(
     r"(?:^|[\\/_.-])(?:test|spec)s?(?:[\\/_.-]|\.)|__tests__|conftest\.py",
@@ -119,7 +120,7 @@ def signals_for_event(event: Event, source: str = "main") -> list[GamingSignal]:
 
     if not (event.is_file_edit() and _is_test_path(event.file_path)):
         return signals
-    name = Path(event.file_path).name
+    name = base_name(event.file_path)
 
     for old, new in _edit_pairs(event):
         old_asserts = len(_ASSERT.findall(old))

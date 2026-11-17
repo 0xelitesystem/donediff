@@ -7,6 +7,7 @@ a CI run or an issue. Synthetic paths only; "alice" is a made-up user.
 from __future__ import annotations
 
 import json
+import os
 
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 from donediff.cli import main
@@ -54,7 +55,7 @@ def test_json_and_markdown_show_no_user_name(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     data = json.loads(out)
     assert data["cwd"] == "~" + B + "proj"
-    assert data["transcript"] == "~" + B + "s.jsonl"
+    assert data["transcript"] == "~" + os.sep + "s.jsonl"  # a local path: this OS's separator
     assert set(data) >= {"transcript", "cwd", "scope", "claims"}  # the keys stay
     text = md.read_text(encoding="utf-8")
     assert "- **Project:** `~" + B + "proj`" in text

@@ -15,7 +15,7 @@ from donediff import gitstate
 from donediff.claims import extract_claims
 from donediff.models import ClaimType, Verdict
 from donediff.parser import parse_transcript
-from donediff.shell import confined
+from donediff.shell import base_name, confined
 from donediff.verify import verify_claims
 
 
@@ -38,6 +38,26 @@ def test_confined_refuses_paths_that_leave_the_project(tmp_path):
 def test_confined_refuses_network_and_device_paths(tmp_path, path):
     assert confined(path, tmp_path) is None
     assert confined("a.txt", path) is None
+
+
+@pytest.mark.parametrize("path,name", [
+    ("C:\\proj\\src\\a.py", "a.py"), ("\\\\host\\share\\notes.txt", "notes.txt"),
+    ("/work/app/b.py", "b.py"), ("C:/proj/c.py", "c.py"), ("src\\d.py", "d.py"),
+    ("e.py", "e.py"), ("/work/app/", "app")])
+def test_base_name_splits_both_separators_on_every_os(path, name):
+    assert base_name(path) == name
+
+
+def test_windows_log_gets_the_same_file_verdict_on_every_os(tmp_path):
+    """A Write logged as C:\\...\\notes.txt matches the claim `notes.txt` on POSIX too."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    records = [assistant_tool("w1", "Write", {"file_path": "C:\\proj\\notes.txt", "content": "x"}),
+               tool_result("w1", "ok"), assistant_text("I created `notes.txt`.")]
+    session = parse_transcript(write_jsonl(tmp_path / "s.jsonl", records))
+    found = [f for f in verify_claims(session, extract_claims(session), check_disk=False)
+             if f.claim.type is ClaimType.FILE_CREATED]
+    assert len(found) == 1 and found[0].verdict is Verdict.VERIFIED, found
 
 
 def test_confined_refuses_a_symlink_that_leads_outside(tmp_path):
@@ -102,9 +122,9 @@ def _unc(text: str) -> bool:
     return text.replace("/", "\\").startswith("\\\\")
 
 
-# Backslash UNC form: a separator only on Windows, where stat-ing it opens an SMB
-# connection. On POSIX the same string is one relative file name with no host in it.
-@pytest.mark.skipif(os.name != "nt", reason="backslash UNC paths are a Windows path form")
+# Backslash UNC form: only Windows treats it as a share (stat-ing it opens an SMB
+# connection). The log's file names are split at / and \ on every OS (base_name),
+# so a log written on Windows gets the same finding when audited on Linux or macOS.
 def test_disk_check_never_touches_a_network_path(tmp_path, monkeypatch):
     project = tmp_path / "proj"
     project.mkdir()
