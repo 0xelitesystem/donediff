@@ -58,6 +58,7 @@ from urllib.parse import unquote, urlsplit
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
 from ..parser import complete_background, epoch, loads
+from ..parser import lines as _lines
 from ..shell import is_remote_path
 from . import codex_code_mode as code_mode
 from .base import UnreadableSession, pick_session
@@ -172,20 +173,6 @@ def _read_errors() -> tuple[type[BaseException], ...]:
         from compression import zstd
         errors += (zstd.ZstdError,)
     return errors
-
-
-def _lines(fh, limit: int):
-    """Each line as bytes, or None for a line longer than `limit` (read past, not kept)."""
-    while True:
-        line = fh.readline(limit + 1)
-        if not line:
-            return
-        if len(line) > limit and not line.endswith(b"\n"):
-            while line and not line.endswith(b"\n"):
-                line = fh.readline(limit + 1)
-            yield None
-            continue
-        yield line
 
 
 def session_meta(path: Path) -> dict | None:

@@ -62,6 +62,11 @@ class _NoWholeReads:
     def __exit__(self, *exc):
         self._fh.close()
 
+    def readline(self, size=-1):
+        if size is None or size < 0:
+            raise AssertionError("delegated transcript line read without a bound")
+        return self._fh.readline(size)  # parser.lines reads in MAX_LINE pieces (SEC-231)
+
     def read(self, *args):
         raise AssertionError("delegated transcript loaded whole")
 

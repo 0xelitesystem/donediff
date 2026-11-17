@@ -35,6 +35,26 @@ from pathlib import Path
 from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from .models import CLAUDE_CODE_ACTIONS, SHELL, Delivery, Event, EventKind, Session
 
+MAX_LINE = 32 * 1024 * 1024  # bytes (characters in text mode) of one line; longer is skipped
+MAX_FILE = 512 * 1024 * 1024  # bytes of one Claude Code transcript; a larger one is not read
+
+
+def lines(fh, limit: int):
+    """Each line of a file (bytes or text mode), or None for a line longer
+    than `limit`: it is read past in `limit`-sized pieces, never held whole."""
+    while True:
+        line = fh.readline(limit + 1)
+        if not line:
+            return
+        newline = "\n" if isinstance(line, str) else b"\n"
+        if len(line) > limit and not line.endswith(newline):
+            while line and not line.endswith(newline):
+                line = fh.readline(limit + 1)
+            yield None
+            continue
+        yield line
+
+
 def loads(text):
     """json.loads, with a too-deep document raised as ValueError (SEC-207).
 
@@ -220,10 +240,18 @@ def parse_transcript(path: str | Path) -> Session:
     line_no = 0
     clock = float("-inf")
 
+    if path.stat().st_size > MAX_FILE:
+        from .readers.base import UnreadableSession
+        raise UnreadableSession(f"transcript is larger than donediff reads "
+                                f"({MAX_FILE // (1024 * 1024)} MiB): {path.name}")
     # An invalid UTF-8 byte (a damaged file, or a live session cut inside a
-    # character) is replaced, not raised (SEC-229).
+    # character) is replaced, not raised (SEC-229). A line over MAX_LINE is
+    # skipped and counted, never held whole (SEC-231).
     with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
+        for line in lines(fh, MAX_LINE):
+            if line is None:
+                session.unrecognised += 1
+                continue
             line = line.strip()
             if not line:
                 continue

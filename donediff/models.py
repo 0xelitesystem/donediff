@@ -150,6 +150,7 @@ class Source:
     events: list[Event] = field(default_factory=list)
     gaming: list["GamingSignal"] = field(default_factory=list)
     size: int = 0
+    skipped: int = 0  # lines over parser.MAX_LINE, read past (SEC-231)
 
     def describe(self) -> str:
         where = (f"workflow {self.run_id}, agent {self.agent_id}"

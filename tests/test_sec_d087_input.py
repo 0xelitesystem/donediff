@@ -305,3 +305,57 @@ def test_opencode_session_over_budget_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(oc, "_MAX_ROWS", 2)
     with pytest.raises(UnreadableSession, match="larger than donediff reads"):
         audit(db, "opencode")
+
+
+# -- SEC-231: line and file caps in the Claude Code readers ----------------------
+
+def _cc_with_padded_line(tmp_path, name="s.jsonl"):
+    padded = json.dumps({"type": "progress", "pad": [{}] * 400})
+    path = tmp_path / name
+    path.write_text("\n".join([padded] + [l.decode() for l in _cc_lines()]) + "\n")
+    return path
+
+
+def test_main_line_over_cap_is_skipped_and_counted(tmp_path, monkeypatch):
+    from donediff import parser
+    path = _cc_with_padded_line(tmp_path)
+    monkeypatch.setattr(parser, "MAX_LINE", 1000)
+    result = audit(path, "claude-code")
+    assert result.session.unrecognised == 1
+    assert pass_verdict(result) is Verdict.VERIFIED
+
+
+def test_main_file_over_cap_is_refused(tmp_path, monkeypatch):
+    from donediff import parser
+    from donediff.readers.base import UnreadableSession
+    path = _cc_with_padded_line(tmp_path)
+    monkeypatch.setattr(parser, "MAX_FILE", 100)
+    with pytest.raises(UnreadableSession, match="larger than donediff reads"):
+        audit(path, "claude-code")
+
+
+def _with_subagent(tmp_path):
+    main = write_jsonl(tmp_path / "m.jsonl", [assistant_text("Started.")])
+    sub = tmp_path / "m" / "subagents"
+    sub.mkdir(parents=True)
+    padded = json.dumps({"type": "progress", "pad": [{}] * 400})
+    (sub / "agent-a1.jsonl").write_text(
+        padded + "\n" + "\n".join(l.decode() for l in _cc_lines()) + "\n")
+    return main
+
+
+def test_subagent_line_over_cap_is_skipped_and_counted(tmp_path, monkeypatch):
+    from donediff import delegated
+    main = _with_subagent(tmp_path)
+    monkeypatch.setattr(delegated, "MAX_LINE", 1000)
+    result = audit(main, "claude-code")
+    assert result.session.unrecognised == 1
+
+
+def test_subagent_file_over_cap_is_not_read(tmp_path, monkeypatch):
+    from donediff import delegated
+    main = _with_subagent(tmp_path)
+    monkeypatch.setattr(delegated, "MAX_FILE", 100)
+    result = audit(main, "claude-code")
+    assert result.session.unrecognised == 1
+    assert all(not s.events for s in result.session.sources)

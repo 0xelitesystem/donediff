@@ -40,8 +40,8 @@ from .evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_cou
 from .gaming import signals_for_event
 from .models import CLAUDE_CODE_ACTIONS, FILE_ACTIONS, SHELL, Event, EventKind, Session, Source
 from .parser import (
-    background_done, background_id, complete_background, epoch, exit_code_of,
-    loads, not_run_status, notice_text,
+    MAX_FILE, MAX_LINE, background_done, background_id, complete_background, epoch,
+    exit_code_of, lines, loads, not_run_status, notice_text,
 )
 from .redact import redact_secrets
 
@@ -188,7 +188,10 @@ def read_source(source: Source) -> Source:
     except OSError:
         return source
     with fh:
-        for line in fh:
+        for line in lines(fh, MAX_LINE):
+            if line is None:
+                source.skipped += 1  # over MAX_LINE: read past, never held (SEC-231)
+                continue
             if len(line) < 3:
                 continue
             last_line = line
@@ -300,7 +303,12 @@ def attach_sources(session: Session) -> Session:
     sources = discover_sources(session.path)
     for source in sources:
         source.label = _label(source)
-        read_source(source)
+        if source.size > MAX_FILE:
+            session.unrecognised += 1  # too large to read (SEC-231): no finish time either
+            source.finished = None
+        else:
+            read_source(source)
+            session.unrecognised += source.skipped
         session.scan.bytes += source.size
         if source.kind == "subagent":
             session.scan.subagents += 1
