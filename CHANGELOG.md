@@ -200,8 +200,8 @@ donediff now reads more coding agents than Claude Code.
   `safe.bareRepository=explicit`; every git transport is turned off; git's
   log and refs are read on NUL separators, with full commit ids and
   `--end-of-options`; config-defined hooks are turned off by name, and a
-  hook name that cannot be turned off is refused. Commit ids of 7 to 64 hex
-  digits are accepted, so SHA-256 repositories are read.
+  hook name that cannot be turned off is refused. A commit id named in a
+  claim may be 7 to 64 hex digits, so SHA-256 repositories are read.
 
 ## 0.4.2
 
