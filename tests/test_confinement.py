@@ -84,21 +84,56 @@ def test_disk_check_does_not_look_outside_the_project(tmp_path):
     assert "exists on disk" not in finding.evidence  # the outside file was never looked at
 
 
-def test_disk_check_never_touches_a_network_path(tmp_path, monkeypatch):
-    project = tmp_path / "proj"
-    project.mkdir()
-    touched = []
+def watch_exists(monkeypatch, refused) -> list[str]:
+    """Every Path.exists call on a path `refused` matches, recorded instead of hidden."""
+    touched: list[str] = []
     real_exists = Path.exists
 
     def watch(self, *args, **kwargs):
-        if str(self).replace("/", "\\").startswith("\\\\"):
+        if refused(str(self)):
             touched.append(str(self))
         return real_exists(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "exists", watch)
+    return touched
+
+
+def _unc(text: str) -> bool:
+    return text.replace("/", "\\").startswith("\\\\")
+
+
+# Backslash UNC form: a separator only on Windows, where stat-ing it opens an SMB
+# connection. On POSIX the same string is one relative file name with no host in it.
+@pytest.mark.skipif(os.name != "nt", reason="backslash UNC paths are a Windows path form")
+def test_disk_check_never_touches_a_network_path(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    touched = watch_exists(monkeypatch, _unc)
     finding = audit(tmp_path, project, "\\\\host\\share\\notes.txt", "I created `notes.txt`.")
     assert touched == []
     assert "network or device path" in finding.evidence
+
+
+def test_disk_check_never_touches_a_forward_slash_network_path(tmp_path, monkeypatch):
+    """//host/share is UNC on Windows and implementation-defined on POSIX: refused on both."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    touched = watch_exists(monkeypatch, _unc)
+    finding = audit(tmp_path, project, "//host/share/notes.txt", "I created `notes.txt`.")
+    assert touched == []
+    assert "network or device path" in finding.evidence
+
+
+@pytest.mark.parametrize("path", ["/dev/notes.txt", "/proc/self/notes.txt"])
+def test_disk_check_never_touches_a_posix_device_path(tmp_path, monkeypatch, path):
+    """A device or proc path is outside the project folder, so it is never checked."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    touched = watch_exists(monkeypatch, lambda text: any(
+        part in text.replace("\\", "/") for part in ("/dev/", "/proc/")))
+    finding = audit(tmp_path, project, path, "I created `notes.txt`.")
+    assert touched == []
+    assert "outside the project folder" in finding.evidence
 
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
