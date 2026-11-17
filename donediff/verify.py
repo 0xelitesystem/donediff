@@ -83,11 +83,23 @@ def _how_masked(event: Event) -> str | None:
     return masked_exit(event.command) if event.command else None
 
 
+# Pipe stages that pass lines through unchanged and in order (at most cut to
+# the first or last N). Only behind one of these can a pass marker in the
+# output be trusted: grep, sed, awk and the like can pick lines or write a
+# marker of their own (SEC-244).
+_VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
+                               "out-host", "out-string", "select-object", "select"})
+
+
 def _inconclusive(event: Event) -> str | None:
     """The reason, when a pipe or a later command hid the exit code and the
-    output shows no pass marker; else None."""
+    output shows no pass marker (or one a rewriting filter may have made);
+    else None."""
     how = _how_masked(event)
-    if how is None or event.pass_hint:
+    if how is None:
+        return None
+    if event.pass_hint and not (how.startswith("| ")
+                                and how[2:].split(" ", 1)[0] not in _VERBATIM_FILTERS):
         return None
     if how.startswith("| "):
         return MASKED_REASON
