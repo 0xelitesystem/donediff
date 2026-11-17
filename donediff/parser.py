@@ -126,10 +126,15 @@ def not_run_status(block: dict, text: str, tool_use_result) -> str | None:
     output never turns a failure into "did not run"."""
     if block.get("is_error") is not True or isinstance(tool_use_result, dict):
         return None
-    if _EXIT_CODE_RE.search(text[:500]):
+    # An exit code anywhere in the result, or a failing-Bash record, means the
+    # command ran; long output cannot push it out of view (SEC-246).
+    if _EXIT_CODE_RE.search(text) or (isinstance(tool_use_result, str)
+                                      and tool_use_result.startswith("Error: Exit code")):
         return None
     head = text.lstrip()
-    return next((status for start, status in _NOT_RUN if head.startswith(start)), None)
+    # Claude Code's own message is the whole result (short user feedback may follow).
+    return next((status for start, status in _NOT_RUN
+                 if head.startswith(start) and len(head) <= len(start) + 2000), None)
 
 
 def background_id(tool_use_result, text: str) -> str | None:
