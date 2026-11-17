@@ -396,3 +396,72 @@ def test_posix_automount_paths_are_refused_lexically(tmp_path, monkeypatch, path
                         lambda self, *a, **k: resolve(self) if str(self).startswith(("/net", "/Network"))
                         else real(self, *a, **k))
     assert shell.confined(path, str(tmp_path)) is None
+
+
+# -- SEC-248: config-defined hooks (hook.<name>.command, git 2.50+) -------------
+
+def _config_hook_repo(tmp_path: Path, marker: Path) -> Path:
+    repo = make_repo(tmp_path)
+    run = f"echo hit >> '{marker.as_posix()}'"
+    for key, value in (("hook.ev.command", run), ("hook.ev.event", "post-index-change"),
+                       ("hook.Two.Dots.command", run), ("hook.Two.Dots.event", "post-index-change")):
+        git(repo, "config", key, value)
+    return repo
+
+
+def _stale_index(repo: Path) -> None:
+    """Same content, new time: status must refresh the index (and so write it)."""
+    stat = (repo / "README.md").stat()
+    os.utime(repo / "README.md", (stat.st_atime + 100, stat.st_mtime + 100))
+
+
+@needs_git
+def test_config_hooks_are_turned_off_by_name(tmp_path, monkeypatch):
+    marker = tmp_path / "hook-ran.txt"
+    repo = _config_hook_repo(tmp_path, marker)
+    calls = _spy_popen(monkeypatch)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        found.status()
+    status = next(argv for argv in calls if "status" in argv)
+    assert "hook.ev.enabled=false" in status
+    assert "hook.Two.Dots.enabled=false" in status
+
+
+@needs_git
+def test_config_hook_never_fires_even_when_git_writes_the_index(tmp_path, monkeypatch):
+    marker = tmp_path / "hook-ran.txt"
+    repo = _config_hook_repo(tmp_path, marker)
+    _stale_index(repo)
+    index = (repo / ".git" / "index").read_bytes()
+
+    # Control: plain git status writes the index and fires the config hook.
+    subprocess.run([REAL_GIT, "-C", str(repo), "status", "--porcelain"],
+                   env=_git_env(), capture_output=True, timeout=60)
+    if not marker.exists():
+        pytest.skip("this git has no config-defined hooks (git < 2.50)")
+    marker.unlink()
+    (repo / ".git" / "index").write_bytes(index)
+    _stale_index(repo)
+
+    # Without GIT_OPTIONAL_LOCKS=0 git writes the index; the hook must still not fire.
+    real_env = gitstate._environment
+
+    def writing_env():
+        env = real_env()
+        env.pop("GIT_OPTIONAL_LOCKS", None)
+        return env
+    monkeypatch.setattr(gitstate, "_environment", writing_env)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        found.status()
+    assert not marker.exists()
+
+
+@needs_git
+def test_hook_name_that_cannot_be_turned_off_is_refused(tmp_path):
+    repo = make_repo(tmp_path)
+    with open(repo / ".git" / "config", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write('[hook "a=b"]\n\tcommand = false\n\tevent = post-index-change\n')
+    found = gitstate.GitRepo(str(repo))
+    assert found.reason == "repository names a hook that cannot be turned off"
