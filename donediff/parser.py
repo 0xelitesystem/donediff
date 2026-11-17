@@ -220,7 +220,9 @@ def parse_transcript(path: str | Path) -> Session:
     line_no = 0
     clock = float("-inf")
 
-    with open(path, encoding="utf-8") as fh:
+    # An invalid UTF-8 byte (a damaged file, or a live session cut inside a
+    # character) is replaced, not raised (SEC-229).
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
             if not line:

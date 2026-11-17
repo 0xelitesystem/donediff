@@ -167,3 +167,44 @@ def test_overlong_exit_code_is_a_failure(tmp_path, agent):
         code = int(HUGE)
     result = audit(BUILDERS[agent](tmp_path, "boom", code), agent)
     assert pass_verdict(result) is not Verdict.VERIFIED
+
+
+# -- SEC-229: the Claude Code reader and invalid UTF-8 ---------------------------
+
+def _cc_lines():
+    return [json.dumps(r).encode() for r in (
+        assistant_tool("t1", "Bash", {"command": "pytest -q"}),
+        tool_result("t1", "3 passed in 0.1s"), assistant_text("All tests pass."))]
+
+
+def test_invalid_utf8_line_is_read_past(tmp_path):
+    lines = _cc_lines()
+    lines.insert(1, b'{"type":"assistant","x":"\xff\xfe\xc0\xaf"}')
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"\n".join(lines) + b"\n")
+    for agent in ("claude-code", "auto"):
+        assert pass_verdict(audit(path, agent)) is Verdict.VERIFIED
+
+
+def test_invalid_utf8_in_command_reads(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"\n".join(l.replace(b"pytest -q", b"pytest \xff-q") for l in _cc_lines()))
+    audit(path, "claude-code")  # no UnicodeDecodeError
+
+
+def test_live_session_cut_inside_a_character(tmp_path):
+    cut = json.dumps(assistant_text("Done \u2714 now"), ensure_ascii=False).encode()
+    at = cut.index(b"\xe2\x9c\x94")
+    path = tmp_path / "live.jsonl"
+    path.write_bytes(b"\n".join(_cc_lines()) + b"\n" + cut[:at + 2])
+    result = audit(path, "claude-code")
+    assert pass_verdict(result) is Verdict.VERIFIED
+    assert result.session.unrecognised == 1
+
+
+def test_damaged_database_in_auto_mode_is_a_plain_message(tmp_path, capsys):
+    path = tmp_path / "sessions.db"
+    path.write_bytes(b"SQLite format 3\x00" + b"\xff\xfe\x80" * 4000)
+    code = cli.main(["audit", str(path), "--no-disk-check"])
+    err = capsys.readouterr().err
+    assert code == 2 and "Traceback" not in err
