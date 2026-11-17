@@ -643,6 +643,69 @@ def test_repository_allowed_ext_transport_never_runs_on_old_git(tmp_path, monkey
     assert not marker.exists()
 
 
+_SESSION_EPOCH = 1781092800  # IN_SESSION as seconds
+
+
+@needs_git
+@pytest.mark.parametrize("separator", ["\u2028", "\x1c", "\x85", "\r"],
+                         ids=["u2028", "x1c", "x85", "cr"])
+def test_commit_subject_cannot_forge_a_log_record(tmp_path, separator):
+    """SEC-227: str.splitlines() also splits on these, so a subject forged a second log
+    record whose "sha" went unchecked into `git show ... <sha>`, where git took it as an
+    option (--output=<path> writes a file)."""
+    repo = make_repo(tmp_path)
+    real = commit_file(repo, "src/a.py", "Add a")
+    target = tmp_path / "written-by-git.txt"
+    message = (f"tidy{separator}--output={target.as_posix()}\x1f{_SESSION_EPOCH}\x1fforged")
+    (repo / "z.py").write_text("z = 1\n", encoding="utf-8")
+    git(repo, "add", "z.py")
+    tree = git(repo, "write-tree")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+               GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid",
+               GIT_AUTHOR_DATE=IN_SESSION, GIT_COMMITTER_DATE=IN_SESSION,
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    forged = subprocess.run(["git", "-C", str(repo), "commit-tree", tree, "-p", "HEAD",
+                             "-F", "-"], input=message.encode("utf-8"), capture_output=True,
+                            check=True, env=env).stdout.decode().strip()
+    git(repo, "update-ref", "refs/heads/main", forged)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert found.available, found.reason
+        commits = found.commits_between(_SESSION_EPOCH - 60, _SESSION_EPOCH + 60)
+        assert sorted(c.sha for c in commits) == sorted([real, forged])
+        for commit in commits:
+            found.files_in(commit)
+    assert not target.exists()
+
+
+@needs_git
+def test_ids_from_outside_never_reach_git_as_options(tmp_path, monkeypatch):
+    """SEC-227: a sha that is not hex is never run, and every id that does reach git
+    sits after --end-of-options or in an attached --contains=<id>."""
+    repo = make_repo(tmp_path)
+    sha = commit_file(repo, "src/a.py", "Add a")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    calls = []
+    real = subprocess.Popen
+
+    def spy(argv, **kwargs):
+        calls.append(list(argv))
+        return real(argv, **kwargs)
+
+    with gitstate.GitRepo(str(repo)) as found:
+        monkeypatch.setattr(gitstate.subprocess, "Popen", spy)
+        assert found.files_in(gitstate.Commit("--output=x", 0.0, "forged")) == set()
+        assert calls == []
+        assert found.files_in(gitstate.Commit(sha, 0.0, "Add a")) == {"src/a.py"}
+        assert found.has_commit(sha[:8])
+        assert found.remote_branches_containing(sha) == ["origin/main"]
+        assert found.remote_refs() == ["origin/main"]
+    show, cat_file, contains = calls[0], calls[1], calls[2]
+    assert show[-2:] == ["--end-of-options", sha]
+    assert cat_file[-2:] == ["--end-of-options", f"{sha[:8]}^{{commit}}"]
+    assert contains[-1] == f"--contains={sha}"
+
+
 @needs_git
 def test_filter_name_with_an_equals_sign_is_refused(tmp_path):
     """SEC-191: `-c filter.a=b.clean=` is split by git at the first "=", so the filter

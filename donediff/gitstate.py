@@ -45,6 +45,7 @@ OUTPUT_CAP = 4 * 1024 * 1024  # bytes read from one call; more is an error
 MAX_COMMITS = 200  # session commits read with show --name-only
 
 _HEX_ID = re.compile(r"[0-9a-fA-F]{7,40}")
+_FULL_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # SHA-1 or SHA-256, as git log prints
 _MSYS_DRIVE = re.compile(r"^/([A-Za-z])(?=/|$)")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
@@ -406,7 +407,7 @@ class GitRepo:
         _refuse_network_repository(Path(self.project), self._read_config_file)
         code, out = self._run(["rev-parse", "--is-inside-work-tree", "--show-toplevel"],
                               check=False)
-        lines = out.splitlines()
+        lines = out.split("\n")
         if code != 0 or not lines or lines[0].strip() != "true" or len(lines) < 2:
             raise GitError("not a git work tree")
         self.toplevel = str(Path(_windows_path(lines[1].strip())).resolve())
@@ -476,10 +477,14 @@ class GitRepo:
                 _, out = self._run(["log", "--branches", "HEAD", "--no-show-signature",
                                     "--date-order", f"--since=@{key[0]}",
                                     f"--until=@{key[1]}", f"--max-count={MAX_COMMITS}",
-                                    "--format=%H%x1f%ct%x1f%s"])
-                for line in out.splitlines():
-                    parts = line.split("\x1f", 2)
-                    if len(parts) == 3 and parts[1].isdigit() and \
+                                    "-z", "--format=%H%x1f%ct%x1f%s"])
+                # NUL between records: a subject can hold any other line separator
+                # (U+2028, x1c, x85, CR, ...), and a record it forged would carry an
+                # unchecked "sha" into a later argv.
+                for record in out.split("\0"):
+                    parts = record.split("\x1f", 2)
+                    if len(parts) == 3 and _FULL_SHA.fullmatch(parts[0]) and \
+                            parts[1].isascii() and parts[1].isdigit() and \
                             start <= float(parts[1]) <= end:
                         found.append(Commit(parts[0], float(parts[1]), parts[2]))
             self._commits[key] = found
@@ -487,11 +492,13 @@ class GitRepo:
 
     def files_in(self, commit: Commit) -> set[str]:
         """Paths (repository-relative, forward slashes) the commit changed."""
+        if not _FULL_SHA.fullmatch(commit.sha):
+            return set()
         if commit.sha not in self._files:
             _, out = self._run(["show", "--no-ext-diff", "--no-textconv",
                                 "--no-show-signature", "--no-renames",
                                 "--diff-merges=first-parent", "--name-only",
-                                "--format=", "-z", commit.sha])
+                                "--format=", "-z", "--end-of-options", commit.sha])
             self._files[commit.sha] = {p for p in out.split("\0") if p.strip()}
         return self._files[commit.sha]
 
@@ -525,22 +532,24 @@ class GitRepo:
 
     def remote_refs(self) -> list[str]:
         if self._remote_refs is None:
-            _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)"])
-            self._remote_refs = [r.strip() for r in out.splitlines() if r.strip()]
+            _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)%00"])
+            self._remote_refs = [r.strip() for r in out.split("\0") if r.strip()]
         return self._remote_refs
 
     def remote_branches_containing(self, sha: str) -> list[str]:
         """Remote-tracking branches (local refs, never fetched) holding the commit."""
         if not _HEX_ID.fullmatch(sha):
             return []
-        _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)",
-                            "--contains", sha])
-        return [r.strip() for r in out.splitlines() if r.strip()]
+        # Attached form: the (hex-checked) id is the option's value, never an option.
+        _, out = self._run(["branch", "-r", "--no-column", "--format=%(refname:short)%00",
+                            f"--contains={sha}"])
+        return [r.strip() for r in out.split("\0") if r.strip()]
 
     def has_commit(self, sha: str) -> bool:
         if not _HEX_ID.fullmatch(sha):
             return False
-        code, _ = self._run(["cat-file", "-e", f"{sha}^{{commit}}"], check=False)
+        code, _ = self._run(["cat-file", "-e", "--end-of-options", f"{sha}^{{commit}}"],
+                            check=False)
         return code == 0
 
     # -- paths ----------------------------------------------------------------
