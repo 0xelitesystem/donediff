@@ -352,6 +352,27 @@ def test_sec238_backslash_backtick_in_a_markdown_report(tmp_path):
     assert "\\`<img" not in report and "&#92;`<img" in report
 
 
+# -- SEC-254: the token mask runs in linear time --------------------------------
+
+def test_sec254_token_mask_is_linear_on_a_long_prefix_run():
+    from donediff.redact import redact_secrets
+    unit = "e" + "yJ-"  # the token prefix, joined by '-': no dots, no token
+    text = unit * (312 * 1024 // len(unit))
+    started = time.perf_counter()
+    assert redact_secrets(text) == text
+    assert time.perf_counter() - started < 1.0  # was 43 s
+
+
+def test_sec254_a_token_is_still_masked_after_a_word_break():
+    from donediff.redact import redact_secrets
+    part = "e" + "yJ" + "a" * 10
+    token = part + "." + part + "." + "b" * 10  # made up, three dot-joined parts
+    for before in (" ", "(", "=", "\"", "\n", ":"):
+        assert token not in redact_secrets("auth" + before + token)
+    # Glued to a word, it is part of that word, as with \b before.
+    assert ("auth" + token) in redact_secrets("auth" + token)
+
+
 def _suffix_session(tmp_path, written):
     records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
                tool_result("t1", "File created successfully"),
