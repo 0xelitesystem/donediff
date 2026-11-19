@@ -267,11 +267,11 @@ _PIPEFAIL_ON = re.compile(r"^set\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*o\s+pipefail\b")
 # `set -e` (or -eu, -euo ...): a failing statement stops the script.
 _ERREXIT_ON = re.compile(r"^set\s+(?:-[A-Za-z]+\s+)*-[A-Za-df-z]*e")
 # The real status is kept only when the command EXITS with it (SEC-221):
-# `exit $?`, `exit ${PIPESTATUS[0]}`, `exit $LASTEXITCODE`, `exit $rc`
-# after `rc=$?`. Printing it (`echo $?`) keeps nothing: the call's status
-# is then echo's.
+# `exit $?`, `exit ${PIPESTATUS[0]}`, `exit $LASTEXITCODE` as a statement of
+# its own right after the check, `exit $rc` after `rc=$?`. Printing it
+# (`echo "exit $?"`) keeps nothing: the call's status is then echo's.
 _STATUS_EXIT = re.compile(
-    r"\bexit\s+\"?\$\{?(?:\?|PIPESTATUS\[\d+\]|LASTEXITCODE)\}?\"?(?=[\s;)}]|$)",
+    r"\s*exit\s+(\"?)\$(?:\?|\{\?\}|\{PIPESTATUS\[\d+\]\}|LASTEXITCODE|\{LASTEXITCODE\})\1[\s;)}]*",
     re.IGNORECASE)
 # A test of the status (`[ $? -ne 0 ]`, `if ($LASTEXITCODE -ne 0)`,
 # `if (-not $?)`): it keeps the status only when a failing exit follows.
@@ -379,105 +379,158 @@ def _fails_again(statements) -> bool:
     return False
 
 
-def _status_kept(after: list[str], ops: list[str] | None = None) -> bool:
-    """True when the statements after a check exit with its status. `ops` are
-    the operators that follow each statement (`&&`, `||`, `;` ...)."""
+def _status_kept(after: list[str], ops: list[str] | None = None, op0: str = ";") -> bool:
+    """True when the statements right after a check exit with its status, in a
+    canonical form only (fail closed, SEC-292); `$?` read anywhere else is
+    another command's. `ops` are the operators after each statement, `op0`
+    the one after the check. The forms: `exit $?` (`${PIPESTATUS[N]}`,
+    `$LASTEXITCODE`) as the next statement; `rc=$?` as the next statement,
+    then `exit $rc` right after it, behind `[ $rc -ne 0 ] &&` or
+    `if [ $rc -ne 0 ]; then` right after it, or as the call's last statement
+    after `;` with nothing between that names rc, exits or runs unread text;
+    a status test as the next statement (_test_exits_on_failure)."""
     ops = ops or [""] * len(after)
-    saved: set[str] = set()
-    for i, text in enumerate(after):
-        if _STATUS_EXIT.search(text):
-            return True
-        # Bash names are case-sensitive; `rc=0` or `unset rc` drops a saved status (V-3).
-        saved -= {n for n in saved if re.search(
-            r"(?:^|[\s;])(?:" + re.escape(n) + r"=(?!\"?\$\{?(?:\?|PIPESTATUS))|unset\s+"
-            + re.escape(n) + r"\b)", text)}
-        saved.update(m.group(1) for m in _STATUS_SAVED.finditer(text))
-        for name in saved:
-            if re.search(r"\bexit\s+\"?\$(?:" + re.escape(name) + r"|\{" + re.escape(name)
-                         + r"\})\"?(?=[\s;)}]|$)", text):
-                return True
-        if _STATUS_REF.search(text) and _test_exits_on_failure(after, ops, i):
-            return True
+    if not after or op0 == "&" or ops[0] == "&":
+        return False
+    if _STATUS_EXIT.fullmatch(after[0]):
+        return True
+    if op0 not in (";", "\n"):
+        return False
+    saved = re.fullmatch(r"\s*([A-Za-z_]\w*)=(\"?)\$\{?(?:\?|PIPESTATUS\[\d+\])\}?\2\s*", after[0])
+    if saved:
+        return _saved_status_exits(saved.group(1), after, ops)
+    return bool(_STATUS_REF.search(after[0])) and _test_exits_on_failure(after, ops)
+
+
+def _saved_status_exits(name: str, after: list[str], ops: list[str]) -> bool:
+    """The `rc=$?` forms of _status_kept (after[0] is `rc=$?`)."""
+    n = re.escape(name)
+    exit_rc = r"exit\s+(\"?)\$(?:" + n + r"|\{" + n + r"\})\1\s*"
+    guard = r"\[\[?\s*\"?\$\{?" + n + r"\}?\"?\s+(?:-ne|!=|-gt)\s+\"?0\"?\s*\]\]?\s*"
+    if len(after) > 1 and ops[0] in (";", "\n") and ops[1] != "&" \
+            and re.fullmatch(r"\s*" + exit_rc, after[1]):
+        return True
+    if len(after) > 2 and ops[0] in (";", "\n") and ops[2] != "&" and (
+            re.fullmatch(r"\s*" + guard, after[1]) and ops[1] == "&&"
+            and re.fullmatch(r"\s*" + exit_rc, after[2])
+            or re.fullmatch(r"\s*if\s+" + guard, after[1]) and ops[1] in (";", "\n")
+            and re.fullmatch(r"\s*then\s+" + exit_rc, after[2])):
+        return True
+    last = len(after) - 1
+    if last >= 1 and ops[last - 1] in (";", "\n") and ops[last] != "&" \
+            and re.fullmatch(r"\s*" + exit_rc, after[last]):
+        funcs = {m.group(1) for t in after for m in _FUNC_DEF.finditer(t)}
+        return not any(_sets_or_leaves(t, name, funcs) for t in after[1:last])
     return False
+
+
+def _sets_or_leaves(text: str, name: str, funcs: set[str]) -> bool:
+    """True when `text` may set `name` (any use other than `$name`), exit, or
+    run text or a function the engine cannot read."""
+    rest = re.sub(r"\$(?:" + re.escape(name) + r"\b|\{" + re.escape(name) + r"\})", " ", text)
+    if re.search(r"(?<![\w$])" + re.escape(name) + r"\b", rest):
+        return True
+    return any(w.lower() in ("exit", "return", "logout", "exec", "eval", "source", ".", "trap")
+               or w in funcs or w.startswith("$") for w, _, _ in _commands(text))
 
 
 # The status compared with a literal: `[ $? -ne 0 ]`, `if ($LASTEXITCODE -ne 0)` (V-3).
 _STATUS_TEST = re.compile(
     r"\$\{?(?:\?|PIPESTATUS\[\d+\]|LASTEXITCODE)\}?[\"']?\s*(-eq|-ne|-gt|-lt|-ge|-le|==|!=|=)"
     r"\s*[\"']?(-?\d+)\b", re.IGNORECASE)
-_ELSE = re.compile(r"(?:^|[\s;}])(?:else|elif)\b", re.IGNORECASE)
-_GROUP_CLOSER = {"{": "}", "(": ")"}
+_BLOCK_WORDS = frozenset({"if", "elif", "case", "while", "until", "for", "select", "function"})
+_PRINT_ONLY = re.compile(r"\s*(?:echo|printf|write-host|write-output)\b[^<>|`]*", re.IGNORECASE)
 
 
-def _test_exits_on_failure(after: list[str], ops: list[str], i: int) -> bool:
-    """True when the status test at after[i] runs a failing exit when the check
-    failed. Only `$?` compared with 0 is read: `-ne|!=|-gt 0` then `&&` or
-    `then` exit N, `-eq|==|= 0` then `||` or `else` exit N. A test of another
-    value (`[ $? -eq 1 ] || exit 1`) keeps nothing. With no comparison
-    (`if (-not $?) { exit 1 }`), any failing exit after it counts."""
-    text = after[i]
+def _test_exits_on_failure(after: list[str], ops: list[str]) -> bool:
+    """True when the status test at after[0] runs a failing exit when the check
+    failed, in a canonical form only (fail closed, SEC-292): `[ $? OP 0 ]`,
+    `[[ ... ]]` or `test ...` with nothing else in the test (`-a`, `-o` and
+    other operands keep nothing), or PowerShell `if ($LASTEXITCODE -ne 0) {
+    exit 1 }` and `if (-not $?) { exit 1 }`; `-ne|!=|-gt 0` then `&&` or the
+    then branch, `-eq|==|= 0` then `||` or the else branch. The exit is
+    `exit N` (N failing) or throw, reached: not behind `||`, behind `&&` only
+    after echo or printf, and not in a nested block."""
+    text = after[0]
     test = _STATUS_TEST.search(text)
     if test is None:
-        return any(_fails_in(t) for t in after[i:])
+        match = re.fullmatch(r"\s*if\s*\(\s*(?:-not\s*|!\s*)\$\?\s*\)\s*\{([^{}]*)\}\s*", text,
+                             re.IGNORECASE)
+        return bool(match) and _branch_fails([(match.group(1), "")])
     op, value = test.group(1).lower(), test.group(2)
     if int(value) != 0 or op in ("-lt", "-ge", "-le"):
         return False
     on_true = op in ("-ne", "!=", "-gt")
-    parts = _ELSE.split(text[test.end():], maxsplit=1)
-    branches: dict[bool, list[tuple[str, bool]]] = {True: [(parts[0], False)], False: []}
-    if len(parts) > 1:
-        branches[False].append((parts[1], False))
-    if re.match(r"\s*(?:if|elif)\b", text, re.IGNORECASE) and not re.search(r"(?<!\$)\{", text):
-        side = True  # bash if: the then branch runs to else/elif/fi
-        for later in after[i + 1:]:
-            word = later.strip().split(" ", 1)[0].lower()
-            if word in ("fi", "fi;"):
-                break
-            if word in ("else", "elif"):
-                side = False
-            branches[side].append((later, False))
-    elif ops[i] in ("&&", "||"):
-        side, j = ops[i] == "&&", i + 1
-        closer = _GROUP_CLOSER.get(after[j].lstrip()[:1]) if j < len(after) else None
-        while j < len(after):
-            branches[side].append((after[j], ops[i] == "||" and j == i + 1))
-            if closer:
-                if after[j].rstrip().endswith(closer):
-                    break
-            elif ops[j] != "&&":
-                break
-            j += 1
-    return any(_fails_in(t, after_or) for t, after_or in branches[on_true])
+    head, tail = text[:test.start()], text[test.end():]
+    if re.fullmatch(r"\s*if\s*\(\s*", head):  # PowerShell: if (...) { } else { }
+        match = re.fullmatch(r"\s*\)\s*\{([^{}]*)\}\s*(?:else\s*\{([^{}]*)\}\s*)?", tail,
+                             re.IGNORECASE)
+        body = match.group(1 if on_true else 2) if match else None
+        return bool(body) and _branch_fails([(body, "")])
+    bash = re.fullmatch(r"\s*(if\s+)?(?:\[\[?|test)\s*[\"']?", head)
+    if not bash or not re.fullmatch(r"\s*[\"']?\s*(?:\]\]?)?\s*", tail):
+        return False  # [ $? -ne 0 -a 1 = 2 ]: another operand decides
+    if bash.group(1):  # if: the then branch runs to else, the else branch to fi
+        branches: dict[bool, list[tuple[str, str]]] = {True: [], False: []}
+        side = True
+        for j in range(1, len(after)):
+            body = after[j].strip()
+            word = body.split(" ", 1)[0].lower()
+            if word == "fi":
+                return _branch_fails(branches[on_true])
+            if word == "elif" or ops[j] == "&":
+                return False
+            prev = ops[j - 1]
+            if word in ("then", "else"):
+                side = side and word == "then"
+                body, prev = body[len(word):], ""
+            branches[side].append((body, prev))
+        return False  # no fi
+    if ops[0] != ("&&" if on_true else "||"):
+        return False
+    entries: list[tuple[str, str]] = []
+    group = len(after) > 1 and after[1].lstrip()[:1] == "{"
+    for j in range(1, len(after)):
+        body = after[j].strip()[1:] if group and j == 1 else after[j]
+        closed = group and body.rstrip().endswith("}")
+        entries.append((body.rstrip()[:-1] if closed else body, "" if j == 1 else ops[j - 1]))
+        if ops[j] == "&":
+            return False
+        if closed or not group and ops[j] != "&&":
+            return (closed or not group) and _branch_fails(entries, after_or=not on_true)
+    return False
 
 
-# exit/return/throw/false in command position (after ; { ( & | then else do
-# or at the start), outside quotes: `if [ $? -ne 0 ]; then exit 1; fi`.
+def _branch_fails(entries: list[tuple[str, str]], after_or: bool = False) -> bool:
+    """True when a branch (statements and the operator before each) reaches a
+    failing exit. A bare exit fails only as the first command after `||`."""
+    printed = False
+    for k, (body, prev) in enumerate(entries):
+        words = [w.lower() for w, _, _ in _commands(body)]
+        if re.search(r"[{}()]", _QUOTED_TEXT.sub(" ", body)) or set(words) & _BLOCK_WORDS:
+            return False  # a nested block keeps nothing
+        reached = k == 0 or prev in ("", ";", "\n") or prev == "&&" and printed
+        args = command_words(body)
+        if reached and args:
+            head = args[0].lower()
+            if head == "throw":
+                return True
+            if head == "exit" and len(args) <= 2:
+                if len(args) == 1:
+                    if after_or and k == 0:
+                        return True
+                elif re.fullmatch(r"-?\d+", args[1]) and exit_literal_fails(args[1]):
+                    return True
+        printed = reached and bool(_PRINT_ONLY.fullmatch(body)) and "$(" not in body
+    return False
+
+
+# exit/return/throw/false in command position, outside quotes (PowerShell trap handlers).
 _EXIT_IN_TEXT = re.compile(
     r"(?:^|[;{(&|]|\b(?:then|else|do)\b)\s*"
     r"(?:(?:exit|return)\b(?:\s+(?:/b\s+)?([^\s;)}]+))?(?=[\s;)}]|$)|(throw|false)\b)",
     re.IGNORECASE)
 _QUOTED_TEXT = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
-
-
-# `exit "0"` is `exit 0`: unquote a quoted literal code before quotes are blanked (V-3).
-_QUOTED_CODE = re.compile(r"(\b(?:exit|return)\s+(?:/b\s+)?)([\"'])(-?\d+)\2", re.IGNORECASE)
-
-
-def _fails_in(text: str, after_or: bool = False) -> bool:
-    """True when `text` runs a failing exit (inside an if block too). A bare
-    exit returns the status of the test before it, so it fails only as the
-    first command after `||` (`after_or`)."""
-    blank = _QUOTED_TEXT.sub(" ", _QUOTED_CODE.sub(r"\1\3", text))
-    for match in _EXIT_IN_TEXT.finditer(blank):
-        if match.group(2):
-            return True
-        code = match.group(1)
-        if code is None:
-            if after_or and match.start() == 0:
-                return True
-        elif re.fullmatch(r"-?\d+", code) and exit_literal_fails(code):
-            return True
-    return False
 
 
 _STATUS_CODES = frozenset({"$?", "${?}", "$LASTEXITCODE", "${LASTEXITCODE}"})
@@ -745,7 +798,7 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
         before, after = norms[:pos], texts[pos + 1:]
         pipefail = any(_PIPEFAIL_ON.match(n) for n in before)
         errexit = any(_ERREXIT_ON.match(n) for n in before)
-        read_after = _status_kept(after, [st.op for st in statements[pos + 1:]])
+        read_after = _status_kept(after, [st.op for st in statements[pos + 1:]], statement.op)
         prev_op = statements[pos - 1].op if pos else ""
         if prev_op == "||" and _has_check(chain):
             # Everything from here to the end of the &&/|| chain runs only
@@ -763,7 +816,7 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
                     end += 1
                 tail = statements[pos:max(end, tail_end) + 1]
             if not (any(checks[pos:tail_end + 1]) or _fails_again(tail)
-                    or read_after or _STATUS_EXIT.search(texts[pos])):
+                    or _STATUS_EXIT.fullmatch(texts[pos])):
                 is_swallow = (len(stages) == 1 and _SWALLOW_TAIL.fullmatch(
                     normalize_stage(stages[0]) or ""))
                 how = "|| " + (stages[0].strip() if is_swallow else

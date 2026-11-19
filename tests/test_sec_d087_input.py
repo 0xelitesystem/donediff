@@ -676,9 +676,9 @@ def test_engine_keeps_the_real_wsl_path(tmp_path, capsys):
 # -- stack 0.5.0: SEC-228 caps hold in the SEC-221 and SEC-232 code ------------
 
 def test_overlong_literal_exit_code_is_a_failure_not_a_crash():
-    from donediff.evidence import _failing_stage, _fails_in
+    from donediff.evidence import _branch_fails, _failing_stage
     assert _failing_stage("exit " + HUGE) is True
-    assert _fails_in("if x; then exit " + HUGE + "; fi") is True
+    assert _branch_fails([("exit " + HUGE, "")]) is True
     assert _failing_stage("exit 256") is False
 
 

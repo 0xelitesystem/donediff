@@ -173,3 +173,49 @@ def test_sec290_r3_a_wait_for_another_job_or_in_the_background_is_a_mask(tmp_pat
 ])
 def test_sec290_r3_a_wait_for_the_check_job_keeps_its_status(command):
     assert _kinds(command) == []
+
+
+# -- Row 4, SEC-292 (V-3): a status read keeps the status only in a canonical form
+
+@pytest.mark.parametrize("tail", [
+    "; [ $? -eq 0 -o 1 -eq 1 ] || exit 1",
+    "; if [ $? -ne 0 -a 1 = 2 ]; then exit 1; fi",
+    "; if [ $? -ne 0 ]; then if false; then exit 1; fi; fi",
+    "; if [ $? -ne 0 ]; then true || exit 1; fi",
+    "; rc=$?; echo \"exit $rc\"",
+    "; rc=$?; if false; then exit $rc; fi",
+    "; echo hi; exit $?",
+    "; echo \"exit $?\"",
+    " || echo \"exit $?\"",
+    " || true; exit $?",
+    "; echo hi; [ $? -ne 0 ] && exit 1",
+    "; [ $? -ne 0 ] && exit 1 &",
+    " & if [ $? -ne 0 ]; then exit 1; fi",
+    "; [ $? -ne 0 ] && { if false; then exit 1; fi; }",
+    "; [ $? -ne 0 ] && false && exit 1",
+    "; [ $? -ne 0 ] && exit $?",
+    "; rc=$?; true || exit $rc",
+    "; rc=$?; exit 0; exit $rc",
+    "; rc=$?; f(){ exit $rc; }",
+    "; echo hi; rc=$?; exit $rc",
+])
+def test_sec292_r3_a_status_read_outside_the_canonical_forms_keeps_nothing(tmp_path, tail):
+    command = _QUIET + tail
+    assert _kinds(command)
+    finding, _ = _verdict(tmp_path, command)
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("tail", [
+    "; rc=$?; if [ $rc -ne 0 ]; then exit $rc; fi",
+    "; rc=$?; [ $rc -ne 0 ] && exit $rc",
+    "; rc=$?; echo done; exit $rc",
+    "; if [ $? -ne 0 ]; then echo failed; exit 1; fi",
+    "; exit $?",
+    " | tail -3; exit ${PIPESTATUS[0]}",
+    " || exit $?",
+    "; test $? -eq 0 || exit 1",
+    "; [[ $? -ne 0 ]] && exit 1",
+])
+def test_sec292_r3_the_canonical_status_forms_keep_the_status(tail):
+    assert _kinds(_QUIET + tail) == []
