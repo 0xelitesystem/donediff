@@ -308,8 +308,8 @@ donediff now reads more coding agents than Claude Code.
   `--jwt-`, a dash list item) is masked again; the SEC-254 speed fix had
   stopped masking it. A token is also masked when its first part holds a
   dash, and when it is glued to a word or an underscore
-  (`TOKEN_<token>`, `auth<token>`), so a readable token next to a word no
-  longer reaches a report or a CI log.
+  (`TOKEN_<token>`, `auth<token>`), so such a token no longer reaches a
+  report or a CI log in readable form.
 - SEC-296: a keycap emoji or a Turkish word with a dotless i no longer
   raises the hidden-characters signal; a dotless i that changes the claims
   read still does. Only a real keycap emoji (a 0-9, `#` or `*` base) is
