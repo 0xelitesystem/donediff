@@ -221,7 +221,7 @@ def _finding_dict(finding: Finding, full_paths: bool = False) -> dict:
         "evidence": _shown(finding.evidence, full_paths),
         "claim_event": finding.claim.event_index,
         "evidence_event": finding.evidence_index,
-        "evidence_source": finding.evidence_source,
+        "evidence_source": _shown(finding.evidence_source, full_paths),  # SEC-259
         "relayed": finding.relayed,
     }
 
@@ -252,7 +252,7 @@ def render_json(result: AuditResult, full_paths: bool = False) -> str:
             "severity": s.severity.value,
             "description": _shown(s.description, full_paths),
             "event": s.event_index,
-            "source": s.source,
+            "source": _shown(s.source, full_paths),  # SEC-259
         } for s in result.gaming_signals],
     }, indent=2)
 

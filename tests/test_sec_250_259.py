@@ -440,6 +440,25 @@ def test_sec257_65_hex_digits_are_no_id():
                 if c.type is ClaimType.COMMIT_ID]
 
 
+# -- SEC-259: the JSON source fields hide the home folder too -------------------
+
+def test_sec259_json_source_fields_show_the_home_folder_as_tilde():
+    from donediff import report
+    from donediff.models import AuditResult, Claim, ClaimType, Finding, GamingSeverity, GamingSignal, Session
+    label = "sub-agent a1 (Review C:\\Users\\someone\\repo)"
+    claim = Claim(type=ClaimType.TESTS_PASS, quote="tests pass", event_index=0, detail="")
+    finding = Finding(claim=claim, verdict=Verdict.VERIFIED, evidence="ok [in " + label + "]",
+                      evidence_index=None, evidence_source=label)
+    signal = GamingSignal(kind="x", severity=GamingSeverity.LOW, description="d", event_index=0,
+                          source=label)
+    result = AuditResult(session=Session(path="t.jsonl"), findings=[finding], gaming_signals=[signal])
+    shown = json.loads(report.render_json(result))
+    assert shown["claims"][0]["evidence_source"] == "sub-agent a1 (Review ~\\repo)"
+    assert shown["gaming_signals"][0]["source"] == "sub-agent a1 (Review ~\\repo)"
+    full = json.loads(report.render_json(result, full_paths=True))
+    assert full["claims"][0]["evidence_source"] == label and full["gaming_signals"][0]["source"] == label
+
+
 def _suffix_session(tmp_path, written):
     records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
                tool_result("t1", "File created successfully"),
