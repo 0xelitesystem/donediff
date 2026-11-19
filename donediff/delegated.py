@@ -41,7 +41,7 @@ from .gaming import signals_for_event
 from .models import CLAUDE_CODE_ACTIONS, FILE_ACTIONS, SHELL, Event, EventKind, Session, Source
 from .parser import (
     MAX_FILE, MAX_LINE, background_done, background_id, complete_background, epoch,
-    exit_code_of, lines, loads, not_run_status, notice_text,
+    exit_code_of, kept_input, lines, loads, not_run_status, notice_text, over_edit_budget,
 )
 from .redact import redact_secrets
 
@@ -175,8 +175,13 @@ def _complete(line: bytes, background: dict, source: Source) -> None:
     source.events.append(launch)
 
 
-def read_source(source: Source) -> Source:
-    """Stream one delegated transcript into source.events and source.gaming."""
+def read_source(source: Source, session: Session | None = None) -> Source:
+    """Stream one delegated transcript into source.events and source.gaming.
+
+    Edit pairs count against `session`'s budget, shared with the main
+    transcript and every other sub-agent (NEW2-I-2); without one, this
+    transcript gets a budget of its own."""
+    budget = session if session is not None else Session(path=str(source.path))
     pending: dict[str, Event] = {}
     background: dict[str, Event] = {}  # tool id / task id -> launch awaiting its notice
     where = None
@@ -231,10 +236,12 @@ def read_source(source: Source) -> Source:
                     name = str(block.get("name", ""))
                     if name not in _SHELL_TOOLS and name not in _EDIT_TOOLS:
                         continue
-                    tool_input = block.get("input")
+                    tool_input = kept_input(block.get("input"))  # only what is read (SEC-231)
+                    if over_edit_budget(budget, tool_input):
+                        source.skipped += 1  # its pairs past the budget: counted unreadable
                     event = Event(kind=EventKind.TOOL_CALL, index=-1,
                                   tool_name=name, tool_id=str(block.get("id", "")),
-                                  tool_input=tool_input if isinstance(tool_input, dict) else {},
+                                  tool_input=tool_input,
                                   source=source, cwd=str(record.get("cwd", "") or ""),
                                   result_seen=False)
                     if where is None:
@@ -307,7 +314,7 @@ def attach_sources(session: Session) -> Session:
             session.unrecognised += 1  # too large to read (SEC-231): no finish time either
             source.finished = None
         else:
-            read_source(source)
+            read_source(source, session)
             session.unrecognised += source.skipped
         session.scan.bytes += source.size
         if source.kind == "subagent":

@@ -224,7 +224,7 @@ def _lean_call(call: dict) -> dict:
         name = _str(call.get("name"))[:128]
         keys = next((keys for tools, keys in _ARG_KEYS if name in tools), None)
         # _Build reads these through _str, and is_background only when True
-        lean["args"] = (kept_input(args) if keys is None
+        lean["args"] = (kept_input(args, edits=False) if keys is None
                         else {key: args[key] for key in keys
                               if isinstance(args.get(key), (str, bool))})
     return lean
@@ -415,7 +415,7 @@ class _Build:
                           "old_string": _str(args.get("old_string")),
                           "new_string": _str(args.get("new_string"))}
         else:
-            action, tool_input = OTHER, kept_input(args)  # only what the engine reads (I-1)
+            action, tool_input = OTHER, kept_input(args, edits=False)  # only what the engine reads (I-1)
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id, tool_input=tool_input,
                       t=self.clock, cwd=cwd, result_seen=False, rewound=rewound)

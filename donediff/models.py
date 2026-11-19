@@ -204,6 +204,7 @@ class Session:
     main_only: bool = False  # True only when the audit was asked for --main-only
     scan: ScanStats = field(default_factory=ScanStats)
     unrecognised: int = 0  # log lines a reader could not read, skipped (shown in scope)
+    edit_pairs: int = 0  # edit pairs kept so far, against parser._MAX_EDIT_PAIRS (I-3)
 
     def tool_calls(self) -> list[Event]:
         return [e for e in self.events if e.kind is EventKind.TOOL_CALL]

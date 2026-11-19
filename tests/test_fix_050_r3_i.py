@@ -192,3 +192,136 @@ def test_new2_i1_a_session_file_over_the_cap_is_not_read(tmp_path, monkeypatch, 
     monkeypatch.setattr(module, "MAX_FILE", path.stat().st_size)
     assert len(reader.parse(path).tool_calls()) == 2
 
+
+
+# -- NEW2-I-2: one edit-pair budget per session, in every reader that keeps pairs --
+
+_ASSERT_PAIR = {"old_string": "assert a", "new_string": ""}  # drops an assert in a test file
+
+
+def _write_lines(path, records):
+    import json
+    with open(path, "w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(json.dumps(record) + "\n")
+    return path
+
+
+def _multiedit(call_id, pairs):
+    from conftest import assistant_tool, tool_result
+    return [assistant_tool(call_id, "MultiEdit", {"file_path": "tests/test_a.py",
+                                                  "edits": [_ASSERT_PAIR] * pairs}),
+            tool_result(call_id, "ok")]
+
+
+def _with_subagent(tmp_path, main_records, sub_records):
+    from conftest import assistant_text
+    main = _write_lines(tmp_path / "s1.jsonl", main_records + [assistant_text("Done.")])
+    folder = tmp_path / "s1" / "subagents"
+    folder.mkdir(parents=True)
+    _write_lines(folder / "agent-a1.jsonl", sub_records)
+    return main
+
+
+def test_new2_i2_subagent_edit_pairs_have_a_budget(tmp_path, monkeypatch):
+    from donediff import parser
+    from donediff.delegated import attach_sources
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10_000)
+    records = []
+    for i in range(30):  # 60,000 assert-dropping pairs, 2,000 a call
+        records += _multiedit(f"m{i}", 2_000)
+    session = attach_sources(parser.parse_transcript(_with_subagent(tmp_path, [], records)))
+    (source,) = session.sources
+    signals = [s for s in source.gaming if s.kind != "hidden_characters"]
+    assert 0 < len(signals) <= 10_000, len(signals)  # one signal a pair: was 60,000
+    assert session.unrecognised == 25  # the 25 calls past the budget
+
+
+def test_new2_i2_the_budget_is_shared_by_the_transcript_and_its_subagents(tmp_path, monkeypatch):
+    from donediff import parser
+    from donediff.delegated import attach_sources
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10_000)
+    main = _with_subagent(tmp_path, _multiedit("m0", 8_000),
+                          _multiedit("s0", 2_000) + _multiedit("s1", 2_000))
+    session = attach_sources(parser.parse_transcript(main))
+    assert session.unrecognised == 1 and session.edit_pairs == 12_000
+
+
+def test_new2_i2_a_real_subagent_multiedit_still_raises_its_signal(tmp_path):
+    from donediff import parser
+    from donediff.delegated import attach_sources
+    session = attach_sources(parser.parse_transcript(
+        _with_subagent(tmp_path, [], _multiedit("s0", 1))))
+    (source,) = session.sources
+    assert len(source.gaming) == 1 and session.unrecognised == 0
+
+
+def _codex_patches(tmp_path, hunks, calls):
+    import json  # noqa: F401
+    mk_codex = _load("make_codex_050r3", FIXTURES / "codex" / "make_codex.py")
+    clock = mk_codex.Clock()
+    lines = [clock.line("session_meta", {**mk_codex.meta("s1", "legacy"), "cwd": mk_codex.CWD})]
+    body = "*** Begin Patch\n*** Update File: a.py\n" + "@@\n+a\n" * hunks + "*** End Patch\n"
+    for i in range(calls):
+        lines += mk_codex.patch_call(clock, f"p{i}", body, "a.py")
+    path = tmp_path / "rollout-2026-06-10T12-00-00-codexdemo-hunk-0001.jsonl"
+    return mk_codex.write(path, lines)
+
+
+def test_new2_i2_codex_patch_hunks_have_a_budget(tmp_path, monkeypatch):
+    from donediff import parser
+    from donediff.readers import CODEX
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10)
+    session = CODEX.parse(_codex_patches(tmp_path, 8, 3))
+    kept = [len(e.tool_input.get("edits", ())) for e in session.tool_calls()]
+    assert kept == [8, 0, 0] and session.unrecognised == 2
+    assert all(e.file_path == "a.py" for e in session.tool_calls())
+
+
+def test_new2_i2_opencode_multiedit_pairs_have_a_budget(tmp_path, monkeypatch):
+    from donediff import cli, parser
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10)
+    mk_opencode = _load("make_opencode_050r3", FIXTURES / "opencode" / "make_opencode.py")
+    builder = mk_opencode.Builder(tmp_path / "opencode.db").session(
+        "ses_r3i20001", directory=str(tmp_path))
+    builder.user("Fix it.")
+    for _ in range(3):
+        builder.tool("multiedit", {"filePath": "a.py",
+                                   "edits": [{"oldString": "a", "newString": "b"}] * 8})
+    builder.say("Done.")
+    session = cli.run_audit(builder.close(), check_disk=False, agent="opencode").session
+    kept = [len(e.tool_input.get("edits", ())) for e in session.tool_calls()]
+    assert kept == [8, 0, 0] and session.unrecognised == 2
+
+
+@pytest.mark.parametrize("reader", ["codex", "gemini", "qwen"])
+def test_new2_i2_an_unmodelled_tool_keeps_no_edit_list(tmp_path, reader):
+    import json
+    args = {"file_path": "notes.md", "edits": [{"new_string": "1"}] * 50}
+    if reader == "codex":
+        mk_codex = _load("make_codex_050r3", FIXTURES / "codex" / "make_codex.py")
+        clock = mk_codex.Clock()
+        path = mk_codex.write(tmp_path / "rollout-2026-06-10T12-00-00-codexdemo-edit-0001.jsonl", [
+            clock.line("session_meta", {**mk_codex.meta("s1", "legacy"), "cwd": mk_codex.CWD}),
+            clock.line("response_item", {"type": "function_call", "name": "mcp__x__y",
+                                         "call_id": "c1", "arguments": json.dumps(args)}),
+            clock.line("response_item", {"type": "function_call_output", "call_id": "c1",
+                                         "output": "ok"})])
+        from donediff.readers import CODEX as chosen
+    elif reader == "gemini":
+        clock = mk_gemini.Clock()
+        path = mk_gemini.write(tmp_path / "session-2026-06-10T12-00-6f1c2d3e.jsonl", [
+            mk_gemini.meta(), mk_gemini.user(clock, "u1", "Go."),
+            mk_gemini.gemini(clock, "g1", "", [mk_gemini.call(
+                clock, "c1", "some_mcp_tool", args, "success",
+                mk_gemini.output("c1", "some_mcp_tool", "ok"))])])
+        chosen = GEMINI
+    else:
+        chat = mk_qwen.Chat()
+        chat.user("Go.")
+        chat.assistant(calls=[mk_qwen.call("c1", "some_mcp_tool", args)])
+        chat.result("c1", "some_mcp_tool", output="ok")
+        path = mk_qwen.write(tmp_path / f"{mk_qwen.SID}.jsonl", chat.records)
+        chosen = QWEN
+    (event,) = chosen.parse(path).tool_calls()
+    assert event.tool_input == {"file_path": "notes.md"}  # the edits list is never read

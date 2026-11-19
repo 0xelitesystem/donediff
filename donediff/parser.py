@@ -111,22 +111,40 @@ def loads(text):
 # not held for the whole audit (SEC-231: 25x the file size in memory).
 _INPUT_KEYS = ("command", "file_path", "content", "old_string", "new_string")
 _EDIT_KEYS = ("old_string", "new_string")
-# Edit pairs kept per transcript (I-3): one kept pair costs about 15 times its
+# Edit pairs kept per session (I-3): one kept pair costs about 15 times its
 # JSON, so 512 MiB of tiny MultiEdit pairs held 7.6 GB. Past the budget a
 # call's pairs are dropped and the call counted unreadable; a real MultiEdit
-# holds a handful of pairs. About 50 MB at most.
+# holds a handful of pairs. About 50 MB at most. One budget per session,
+# shared by its transcript, its sub-agent transcripts and every reader that
+# keeps an edit list (NEW2-I-2).
 _MAX_EDIT_PAIRS = 200_000
 
 
-def kept_input(tool_input) -> dict:
-    """The part of a tool_use input the engine reads (SEC-231)."""
+def over_edit_budget(session: Session, tool_input) -> bool:
+    """True when this tool input's edit list takes the session past
+    _MAX_EDIT_PAIRS: the list is then dropped and the caller counts the call
+    unreadable (I-3, NEW2-I-2)."""
+    edits = tool_input.get("edits") if isinstance(tool_input, dict) else None
+    if not isinstance(edits, list):
+        return False
+    session.edit_pairs += len(edits)
+    if session.edit_pairs <= _MAX_EDIT_PAIRS:
+        return False
+    del tool_input["edits"]
+    return True
+
+
+def kept_input(tool_input, edits: bool = True) -> dict:
+    """The part of a tool_use input the engine reads (SEC-231). A reader's
+    tool it does not model (action OTHER) passes edits=False: only a
+    MultiEdit's pairs are ever read (NEW2-I-2)."""
     if not isinstance(tool_input, dict):
         return {}
     kept = {key: _text(tool_input[key]) for key in _INPUT_KEYS if key in tool_input}
-    edits = tool_input.get("edits")
-    if isinstance(edits, list):
+    pairs = tool_input.get("edits") if edits else None
+    if isinstance(pairs, list):
         kept["edits"] = [{key: _text(edit[key]) for key in _EDIT_KEYS if key in edit}
-                         for edit in edits
+                         for edit in pairs
                          if isinstance(edit, dict) and any(edit.get(key) for key in _EDIT_KEYS)]
     return kept
 
@@ -316,7 +334,6 @@ def parse_transcript(path: str | Path) -> Session:
     shell_ids: set[str] = set()  # every background shell id: its notice is no delivery
     index = 0
     line_no = 0
-    edit_pairs = 0  # kept edit pairs, up to _MAX_EDIT_PAIRS (I-3)
     clock = float("-inf")
 
     if path.stat().st_size > MAX_FILE:
@@ -403,11 +420,8 @@ def parse_transcript(path: str | Path) -> Session:
                             result_seen=False,
                         )
                         event.check_types = check_types(event.command)
-                        if "edits" in event.tool_input:
-                            edit_pairs += len(event.tool_input["edits"])
-                            if edit_pairs > _MAX_EDIT_PAIRS:
-                                del event.tool_input["edits"]
-                                session.unrecognised += 1
+                        if over_edit_budget(session, event.tool_input):
+                            session.unrecognised += 1
                         session.events.append(event)
                         pending[event.tool_id] = event
                         index += 1

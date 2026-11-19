@@ -57,7 +57,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import complete_background, epoch, kept_input, loads
+from ..parser import complete_background, epoch, kept_input, loads, over_edit_budget
 from ..parser import lines as _lines
 from ..shell import is_remote_path
 from . import codex_code_mode as code_mode
@@ -415,6 +415,8 @@ class _Parse:
 
     def _event(self, name: str, action: str, call_id: str, tool_input: dict,
                cwd: str = "") -> Event:
+        if over_edit_budget(self.session, tool_input):  # an apply_patch hunk list (NEW2-I-2)
+            self.session.unrecognised += 1
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id,
                       tool_input=tool_input, t=self.clock, cwd=cwd or self.cwd,
@@ -470,7 +472,7 @@ class _Parse:
               track: bool = True) -> list[Event]:
         # Only the input keys the engine reads, as for Claude Code (SEC-231):
         # an unmodelled tool's padding is not held for the whole audit (I-1).
-        events = [self._event(name, OTHER, call_id, kept_input(tool_input))]
+        events = [self._event(name, OTHER, call_id, kept_input(tool_input, edits=False))]
         if track:
             self._track(call_id, events)
         return events

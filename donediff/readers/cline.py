@@ -75,7 +75,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import loads
+from ..parser import loads, over_edit_budget
 from ..shell import is_remote_path
 from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, argv_command, clean_path, parse_patch
@@ -324,6 +324,8 @@ class _Build:
             self.index += 1
 
     def _event(self, name: str, action: str, call_id: str, tool_input: dict) -> Event:
+        if over_edit_budget(self.session, tool_input):  # a multiedit or patch hunk list (NEW2-I-2)
+            self.session.unrecognised += 1
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id, tool_input=tool_input,
                       t=self.clock, cwd=self.session.cwd, result_seen=False)
