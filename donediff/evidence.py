@@ -606,13 +606,36 @@ def _handler_keeps(handler: str, literal: bool, funcs: set[str]) -> bool:
                 return False
     return True
 _TRAP_PS = re.compile(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{(.*)\}\s*$", re.IGNORECASE | re.DOTALL)
-_TRAP_ANYWHERE = frozenset({"exit", "sigexit", "0"})
-_TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
+_TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug", "return", "sigreturn"})
+# Signal names a trap can be given; a command named by a variable with one of
+# them as an argument (`$t 'exit 0' EXIT`) may be a trap.
+_TRAP_SIGNAL_WORD = re.compile(r"(?:SIG)?(?:EXIT|ERR|DEBUG|RETURN)|0", re.IGNORECASE)
+
+
+def _runs_generated_text(text: str) -> bool:
+    """True when `text` runs shell text the engine cannot read in this shell,
+    which may set a trap or anything else (fail closed, SEC-251 ruling (b)):
+    source or `.` of `<(..)`, `$(..)`, a backtick, /dev/stdin and the like or a
+    redirect, eval of anything not literal, or a command named by a variable
+    given a trap signal name."""
+    for word, _, rest in _commands(text):
+        low = word.lower()
+        if low in ("source", ".") and re.search(r"<|\$\(|`|/dev/|/proc/", rest):
+            return True
+        if low == "eval" and re.search(r"[$`<]", rest):
+            return True
+        args = _SHELL_WORD.findall(rest)
+        if (low.startswith("$") or "`" in low) and len(args) >= 2 \
+                and _TRAP_SIGNAL_WORD.fullmatch(_dequote(args[-1])):
+            return True
+    return False
 
 
 def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     """"anywhere" or "before" for a trap at statement `pos` whose handler exits
     0 (see above), else None. A PowerShell block cut at `;` is joined back."""
+    if _runs_generated_text(texts[pos]):
+        return "anywhere"
     text = _trap_text(texts[pos])
     if text is None:
         return None
@@ -631,8 +654,10 @@ def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
         words = words[1:]
     if len(words) < 2 or words[0].startswith("-"):
         return None  # trap -p, trap -l, trap - EXIT: nothing set
-    sigs = {s.lower().strip("\"';") for s in words[1:]}
-    reach = "anywhere" if sigs & _TRAP_ANYWHERE else "before" if sigs & _TRAP_BEFORE else None
+    # Any signal may come while the check runs (a child can signal the shell),
+    # so only ERR, DEBUG and RETURN are limited to traps set before it (SEC-251).
+    sigs = {_dequote(s).lower().strip(";") for s in words[1:]}
+    reach = "before" if sigs <= _TRAP_BEFORE else "anywhere"
     handler, literal = words[0], False
     if re.fullmatch(r"\$?'[^']*'", handler):
         handler, literal = handler[handler.index("'") + 1:-1], True

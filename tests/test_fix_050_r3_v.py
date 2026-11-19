@@ -95,3 +95,55 @@ def test_sec291_r3_a_trap_that_provably_keeps_the_status_is_no_mask(tmp_path, tr
     assert _kinds(trap + "; python -m pytest -q") == []
     finding, _ = _verdict(tmp_path, trap + "; " + _HELLO, claim=_WORKED)
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- Row 2, SEC-251: generated text run in this shell, and a trap on any signal --
+
+_SEC251_FORMS = [
+    "source <(echo \"trap 'exit 0' EXIT\")",
+    ". <(echo \"trap 'exit 0' EXIT\")",
+    "eval \"$(echo \"trap 'exit 0' EXIT\")\"",
+    "eval `echo trap true EXIT`",
+    "c=\"trap 'exit 0' EXIT\"; eval \"$c\"",
+    "source /dev/stdin <<< \"trap 'exit 0' EXIT\"",
+    "if true; then source <(echo x); fi",
+    "t=trap; $t 'exit 0' EXIT",
+    "trap 'exit 0' INT TERM",
+    "command trap 'exit 0' INT",
+    "trap 'exit 0' USR1",
+    "trap 'exit 0' $SIG",
+    "trap 'exit 0' RETURN",
+]
+
+
+@pytest.mark.parametrize("form", _SEC251_FORMS)
+def test_sec251_r3_generated_text_or_a_trap_on_any_signal_is_a_mask(tmp_path, form):
+    command = form + "; " + _QUIET
+    assert "swallowed_failure" in _kinds(command)
+    finding, signals = _verdict(tmp_path, command, "5 passed")
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "swallowed_failure" in signals
+
+
+@pytest.mark.parametrize("form", _SEC251_FORMS)
+def test_sec251_r3_a_command_claim_after_generated_text_is_unverified(tmp_path, form):
+    command = form + "; " + _HELLO
+    assert zero_exit_trap(command)
+    finding, _ = _verdict(tmp_path, command, claim=_WORKED)
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "hidden by `" in finding.evidence
+
+
+@pytest.mark.parametrize("form", [
+    "source .venv/bin/activate",
+    ". ./env.sh",
+    "eval \"trap 'rm -f t.txt' EXIT\"",
+    "echo \"source <(x)\"",
+    "trap 'exit 1' INT",
+    "trap '' INT",
+    "trap - INT",
+    "$PYTHON -m pip --version",
+])
+def test_sec251_r3_literal_text_and_harmless_traps_are_no_mask(tmp_path, form):
+    assert _kinds(form + "; python -m pytest -q") == []
+    assert zero_exit_trap(form + "; " + _HELLO) is None

@@ -167,7 +167,6 @@ def test_sec251_a_trap_that_exits_zero_swallows_the_failure(tmp_path, command):
     "trap 'echo cleanup' EXIT; python -m pytest -q",
     "trap 'rc=$?; rm -f t.txt; exit $rc' EXIT; python -m pytest -q",
     "trap 'exit 1' EXIT; python -m pytest -q",
-    "trap 'exit 0' INT TERM; python -m pytest -q",
     "trap 'exit' EXIT; python -m pytest -q",
     "trap { Write-Host failed; exit 1 }; python -m pytest -q",
 ])

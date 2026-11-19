@@ -158,7 +158,6 @@ def test_sec251_leftover_trap_forms_swallow_the_failure(tmp_path, command):
     "trap { exit $LASTEXITCODE }; python -m pytest -q",
     "trap \"echo done\" EXIT; python -m pytest -q",
     "trap exit\\ 1 EXIT; python -m pytest -q",
-    "command trap 'exit 0' INT; python -m pytest -q",
     "echo \"trap 'exit 0' EXIT\"; python -m pytest -q",
 ])
 def test_sec251_leftover_traps_that_keep_the_status_are_no_mask(command):
