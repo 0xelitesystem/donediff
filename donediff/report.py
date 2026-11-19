@@ -17,10 +17,13 @@ from .redact import redact_secrets
 # newline in a file name or cwd from the log cannot forge a report line,
 # SEC-237), DEL, C1, and bidi overrides/isolates; and characters that hide
 # text (SEC-245): soft hyphen, zero-width and invisible fillers, line and
-# paragraph separators, invisible operators, the BOM and tag characters.
+# paragraph separators, invisible operators, the BOM and tag characters;
+# and the rest of the Default_Ignorable_Code_Point set (SEC-255): the
+# combining grapheme joiner, Khmer inherent vowels, variation selectors.
 _UNSAFE_CHARS = re.compile(
-    r"[\x00-\x1f\x7f-\x9f\xad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e"
-    r"\u2060-\u206f\u3164\ufeff\uffa0\U000e0000-\U000e007f]"
+    r"[\x00-\x1f\x7f-\x9f\xad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+    r"\ufff0-\ufff8\U000e0000-\U000e0fff]"
 )
 
 

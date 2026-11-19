@@ -152,6 +152,15 @@ def _sentences(text: str) -> list[str]:
 # also joins emoji, so dropping it alone raises no signal.
 _FILLERS = frozenset("ᅟᅠㅤﾠ")
 _JOINER = "‍"
+# The rest of Unicode's Default_Ignorable_Code_Point set, outside Cf (SEC-255):
+# the combining grapheme joiner, the Khmer inherent vowels, variation
+# selectors and the unassigned ignorables. Each renders as nothing.
+_IGNORABLE = re.compile(
+    "[͏឴឵᠋-᠍᠏⁥︀-️￰-￸\U000e0000-\U000e0fff]")
+# A variation selector picks the look of the character before it, so one
+# after an emoji (✔️) is ordinary text; after a Latin letter or a digit it
+# only hides. Like the joiner, it raises the flag only there.
+_SELECTOR = re.compile("[᠋-᠍᠏︀-️\U000e0100-\U000e01ef]")
 # Cyrillic and Greek letters drawn like Latin ones, folded only inside a word
 # that also holds Latin letters (a mixed-script word), so Russian or Greek
 # prose stays as written.
@@ -162,6 +171,9 @@ _CONFUSABLES = str.maketrans({
     "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
     "Х": "X", "ο": "o", "α": "a", "ε": "e", "ρ": "p",
     "Ο": "O", "Α": "A", "Ε": "E", "Κ": "K", "Τ": "T",
+    # SEC-255: Latin alpha and dotless i, Cyrillic shha, komi de and
+    # palochka, Armenian seh, oh and vo.
+    "ɑ": "a", "ı": "i", "һ": "h", "ԁ": "d", "ӏ": "l", "ս": "u", "օ": "o", "ո": "n",
 })
 _WORD_RUN = re.compile(r"\w+")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -173,11 +185,15 @@ def fold_text(text: str) -> tuple[str, bool]:
     folded to Latin. The flag says whether anything was hidden or disguised."""
     text = unicodedata.normalize("NFKC", text)
     changed = False
-    if any(unicodedata.category(c) == "Cf" or c in _FILLERS for c in text):
-        changed = any(c != _JOINER and (unicodedata.category(c) == "Cf" or c in _FILLERS)
-                      for c in text)
-        text = "".join(c for c in text
-                       if unicodedata.category(c) != "Cf" and c not in _FILLERS)
+    def hidden(c: str) -> bool:
+        return unicodedata.category(c) == "Cf" or c in _FILLERS or bool(_IGNORABLE.match(c))
+
+    if _IGNORABLE.search(text) or any(unicodedata.category(c) == "Cf" or c in _FILLERS
+                                      for c in text):
+        changed = any(hidden(c) and c != _JOINER and not (
+            _SELECTOR.match(c) and not (i and text[i - 1].isascii() and text[i - 1].isalnum()))
+            for i, c in enumerate(text))
+        text = "".join(c for c in text if not hidden(c))
     text = text.replace(" ", "\n").replace(" ", "\n")
 
     def fold(match: re.Match) -> str:

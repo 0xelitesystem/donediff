@@ -373,6 +373,55 @@ def test_sec254_a_token_is_still_masked_after_a_word_break():
     assert ("auth" + token) in redact_secrets("auth" + token)
 
 
+# -- SEC-255: every default-ignorable character, and more look-alikes -----------
+
+def _failed_run_then(tmp_path, claim):
+    return write_jsonl(tmp_path / "h.jsonl", [
+        assistant_tool("t1", "Bash", {"command": "python -m pytest -q"}),
+        tool_result("t1", "1 failed, 5 passed", is_error=True),
+        assistant_text(claim),
+    ])
+
+
+@pytest.mark.parametrize("claim", [
+    "All tests pa͏ss.", "All tests pa️ss.", "All tests pa឴ss.", "All tests pa\U000e0100ss.",
+    "All tests pa᠋ss.", "All tests pa￰ss.", "All tests pɑss.",
+])
+def test_sec255_hidden_or_look_alike_claim_is_read_and_flagged(tmp_path, claim):
+    result = audit(_failed_run_then(tmp_path, claim))
+    assert result.findings and result.findings[0].verdict is Verdict.CONTRADICTED
+    assert "hidden_characters" in {s.kind for s in result.gaming_signals}
+
+
+@pytest.mark.parametrize("claim, kind", [
+    ("All tests pass and I commıtted the changes.", "commit_made"),
+    ("All tests pass. I pusһed the branch.", "pushed"),
+])
+def test_sec255_new_look_alikes_fold_to_latin(tmp_path, claim, kind):
+    result = audit(_failed_run_then(tmp_path, claim))
+    assert kind in {f.claim.type.value for f in result.findings}
+    assert "hidden_characters" in {s.kind for s in result.gaming_signals}
+
+
+def test_sec255_more_folds():
+    from donediff.claims import fold_text
+    assert fold_text("buіlԁ ӏint rսn ոode wօrks") == ("build lint run node works", True)
+
+
+def test_sec255_a_selector_after_an_emoji_is_no_flag():
+    from donediff.claims import fold_text
+    text, flagged = fold_text("✔️ All tests pass.")
+    assert text == "✔ All tests pass." and not flagged
+    assert fold_text("pa️ss")[1] and fold_text("v1️")[1]
+
+
+@pytest.mark.parametrize("char", ["͏", "឴", "឵", "᠋", "᠏", "️", "︀",
+                                  "￰", "\U000e0100", "\U000e0fff"])
+def test_sec255_default_ignorables_are_escaped_in_reports(char):
+    from donediff.report import _md, _safe
+    assert char not in _safe("a" + char + "b") and char not in _md("a" + char + "b", cell=True)
+
+
 def _suffix_session(tmp_path, written):
     records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
                tool_result("t1", "File created successfully"),
