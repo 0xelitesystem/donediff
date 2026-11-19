@@ -86,7 +86,7 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     )),
     (ClaimType.COMMIT_ID, re.compile(
         r"\bcommit(?:ted)?(?:\s+(?:as|in|at))?(?:\s+(?:id|hash|sha))?[\s:]+[`(]?"
-        r"([0-9a-fA-F]{7,40})\b",
+        r"([0-9a-fA-F]{7,64})\b",  # up to a full SHA-256 id (SEC-257)
         re.IGNORECASE,
     )),
     (ClaimType.DEPLOYED, re.compile(

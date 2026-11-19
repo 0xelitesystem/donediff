@@ -422,6 +422,24 @@ def test_sec255_default_ignorables_are_escaped_in_reports(char):
     assert char not in _safe("a" + char + "b") and char not in _md("a" + char + "b", cell=True)
 
 
+# -- SEC-257: a commit id may be 7 to 64 hex digits -----------------------------
+
+@pytest.mark.parametrize("length", [7, 40, 41, 64])
+def test_sec257_commit_ids_up_to_64_hex_digits_are_read(length):
+    from donediff.claims import _sentence_claims
+    from donediff.models import ClaimType
+    sha = ("1" + "a" * 63)[:length]
+    (claim,) = [c for c in _sentence_claims(f"Committed as {sha}.", 0) if c.type is ClaimType.COMMIT_ID]
+    assert claim.detail == sha
+
+
+def test_sec257_65_hex_digits_are_no_id():
+    from donediff.claims import _sentence_claims
+    from donediff.models import ClaimType
+    assert not [c for c in _sentence_claims("Committed as 1" + "a" * 64 + ".", 0)
+                if c.type is ClaimType.COMMIT_ID]
+
+
 def _suffix_session(tmp_path, written):
     records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
                tool_result("t1", "File created successfully"),
