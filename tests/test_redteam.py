@@ -386,3 +386,26 @@ def test_sec284_pass_marker_rule_is_unchanged(tmp_path):
     # The chain alone keeps the check's status.
     plain = _audit(_masked_session(tmp_path, "pytest -q && echo ok", "5 passed in 0.1s\nok"))
     assert [f.verdict for f in plain.findings] == [Verdict.VERIFIED]
+
+
+# -- SEC-285: mocha and go failure text beside a pass marker --------------------
+
+@pytest.mark.parametrize("output", [
+    "  1 passing (4ms)\n  1 failing\n",
+    "ok  \texample.com/m/a\t0.002s\n--- FAIL: TestAdd (0.00s)\nFAIL\nFAIL\texample.com/m/b\t0.003s\n",
+    "PASS src/a.test.js\nFAIL src/b.test.js\n",
+])
+def test_sec285_failure_text_beside_a_pass_marker_is_contradicted(tmp_path, output):
+    session = _masked_session(tmp_path, "npm test 2>&1 | tail -20", output)
+    (finding,) = _audit(session).findings
+    assert finding.verdict is Verdict.CONTRADICTED
+
+
+@pytest.mark.parametrize("output", [
+    "  3 passing (4ms)\n", "  0 failing\n", "ok  \texample.com/m\t0.002s\n",
+    "PASS src/a.test.js\n", "FAIL_FAST=0\n5 passed in 0.1s\n", "Failure modes are documented.\n",
+    "  FAILOVER ready\n",
+])
+def test_sec285_passing_output_is_not_a_failure(output):
+    from donediff.evidence import FAILURE_IN_OUTPUT
+    assert not FAILURE_IN_OUTPUT.search(output)

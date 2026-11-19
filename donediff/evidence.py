@@ -72,11 +72,15 @@ CHECK_TYPES = frozenset({
 # "N failed" with N > 0, or framework-specific hard failure markers.
 # A bare FAILED counts only in capitals (pytest's marker): a passing cargo
 # run prints "0 failed", which must not read as a failure.
+# SEC-285: mocha's "N failing", and a capital FAIL at a line start followed
+# by ":", a space or the line end (go test "--- FAIL:" and "FAIL pkg", jest
+# "FAIL src/a.test.js"); FAIL_FAST=0 or "Failure" in prose do not match.
 FAILURE_IN_OUTPUT = re.compile(
-    r"\b([1-9]\d*)\s+fail(?:ed|ures?)\b"
+    r"\b([1-9]\d*)\s+fail(?:ed|ures?|ing)\b"
     r"|(?-i:\bFAILED\b)|\bTests?\s+failed\b|\bBUILD\s+FAILED\b"
     r"|test result: FAILED"
-    r"|^\S*\s*fail\s+[1-9]\d*\s*$",
+    r"|^\S*\s*fail\s+[1-9]\d*\s*$"
+    r"|(?-i:^(?:--- )?FAIL(?::|\s|$))",
     re.IGNORECASE | re.MULTILINE,
 )
 
