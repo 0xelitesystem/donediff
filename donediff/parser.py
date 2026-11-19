@@ -61,10 +61,16 @@ def lines(fh, limit: int):
 # value adds one "," "[" or "{", so the count is exact enough to bound the
 # parse at about MAX_VALUES * 200 bytes plus the text itself; real logs hold
 # far fewer values for their size (prose, code and output are strings).
+# Strings are cut in linear time (SEC-258): escapes go first, so every quote
+# left opens or closes a string and a string is a quote pair with no quote
+# inside. One regex that skipped escapes restarted at each quote of an
+# unterminated string (a line cut mid-write): minutes on one 1 MiB line.
 MAX_VALUES = 1_000_000
 _COUNT_FROM = 1024 * 1024
-_STRING = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"')
-_STRING_BYTES = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+_ESCAPE = re.compile(r"\\.", re.S)
+_ESCAPE_BYTES = re.compile(rb"\\.", re.S)
+_QUOTED = re.compile(r'"[^"]*"')
+_QUOTED_BYTES = re.compile(rb'"[^"]*"')
 
 
 def too_many_values(text) -> bool:
@@ -72,9 +78,9 @@ def too_many_values(text) -> bool:
     if len(text) < _COUNT_FROM:
         return False
     if isinstance(text, str):
-        bare = _STRING.sub("", text)
+        bare = _QUOTED.sub("", _ESCAPE.sub("", text))
         return bare.count(",") + bare.count("[") + bare.count("{") > MAX_VALUES
-    bare = _STRING_BYTES.sub(b"", text)
+    bare = _QUOTED_BYTES.sub(b"", _ESCAPE_BYTES.sub(b"", text))
     return bare.count(b",") + bare.count(b"[") + bare.count(b"{") > MAX_VALUES
 
 
