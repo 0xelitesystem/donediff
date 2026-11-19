@@ -192,16 +192,18 @@ def test_status_replaced_by_a_later_statement_is_masked(command, how):
     assert "swallowed_failure" not in _kinds(command)
 
 
-def test_check_then_other_command_needs_a_pass_marker(tmp_path):
+def test_check_then_other_command_is_unverified_even_with_a_pass_marker(tmp_path):
     hidden = _masked_session(tmp_path, "npm test > out.txt 2>&1; tail -1 out.txt",
                              "Done in 4.20s.")
     (finding,) = _audit(hidden).findings
     assert finding.verdict is Verdict.UNVERIFIED
     assert "exit code hidden by `; tail`" in finding.evidence
+    # SEC-250: a later command can print the marker itself, so it lifts no `;` mask.
     shown = _masked_session(tmp_path, "pytest -q; git status --short",
                             "5 passed in 0.2s\n M src/a.py")
     (finding,) = _audit(shown).findings
-    assert finding.verdict is Verdict.VERIFIED
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "exit code hidden by `; git`, so a pass marker in the output is no proof" in finding.evidence
 
 
 @pytest.mark.parametrize("command", [

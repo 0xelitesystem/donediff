@@ -40,7 +40,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from .evidence import CHECK_TYPES, commit_subjects, masked_exit, stage_types
+from .evidence import CHECK_TYPES, commit_subjects, masked_exit, masking, stage_types
 from .gitstate import GitError, GitRepo
 from .models import (
     EDIT, NOTEBOOK_EDIT, WRITE, Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
@@ -84,23 +84,56 @@ def _how_masked(event: Event) -> str | None:
 
 
 # Pipe stages that pass lines through unchanged and in order (at most cut to
-# the first or last N). Only behind one of these can a pass marker in the
-# output be trusted: grep, sed, awk and the like can pick lines or write a
-# marker of their own (SEC-244).
+# the first or last N). A pass marker in the output counts only when every
+# stage after the check is one of these: grep, sed, awk and the like can pick
+# lines or write a marker of their own (SEC-244). It never lifts a mask made
+# by `||`, `;`, `&` or `!`, where another command can print one
+# (`pytest >/dev/null || echo '5 passed'`, SEC-250).
 _VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
                                "out-host", "out-string", "select-object", "select"})
+# Flags that let the check itself pass with nothing run or found: its own
+# output still tells, so a pass marker may lift them.
+_FLAG_MASKS = frozenset({"--passWithNoTests", "--exit-zero"})
+
+
+def _filter_after_check(pipeline: str) -> str | None:
+    """The first stage after the check in `pipeline` that is not a verbatim
+    filter (its program), or None when every stage after the check is one."""
+    for statement in split_statements(pipeline):
+        stages = [s for s in statement.stages if s]
+        first = next((i for i, s in enumerate(stages) if stage_types(s) & CHECK_TYPES), None)
+        if first is None:
+            continue
+        for stage in stages[first + 1:]:
+            name = program(stage)
+            if name not in _VERBATIM_FILTERS:
+                return name or "?"
+    return None
+
+
+def _marker_blocker(how: str, snippet: str) -> str | None:
+    """What stops a pass marker in the output from lifting this mask, or None."""
+    if how in _FLAG_MASKS:
+        return None
+    if how.startswith("| "):
+        name = _filter_after_check(snippet)
+        return None if name is None else f"a pipe through `{name}`"
+    return f"`{how}`"
 
 
 def _inconclusive(event: Event) -> str | None:
     """The reason, when a pipe or a later command hid the exit code and the
-    output shows no pass marker (or one a rewriting filter may have made);
-    else None."""
-    how = _how_masked(event)
-    if how is None:
+    output shows no pass marker the check itself must have printed; else None."""
+    found = masking(event.command) if event.command else []
+    if not found:
         return None
-    if event.pass_hint and not (how.startswith("| ")
-                                and how[2:].split(" ", 1)[0] not in _VERBATIM_FILTERS):
-        return None
+    if event.pass_hint:
+        blockers = [_marker_blocker(how, snippet) for _, how, snippet in found]
+        blocker = next((b for b in blockers if b is not None), None)
+        if blocker is None:
+            return None
+        return f"exit code hidden by {blocker}, so a pass marker in the output is no proof"
+    how = found[0][1]
     if how.startswith("| "):
         return MASKED_REASON
     return f"exit code hidden by `{how}` and output does not show the result"

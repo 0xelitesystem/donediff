@@ -70,3 +70,68 @@ def test_value_count_is_unchanged_on_valid_json(doc, monkeypatch):
         assert not parser.too_many_values(sample)
         monkeypatch.setattr(parser, "MAX_VALUES", count - 1)
         assert parser.too_many_values(sample)
+
+
+# -- SEC-250 + SEC-244: when a pass marker may lift a hidden exit code ---------
+
+def _one_run(tmp_path, command, output, claim="All tests pass."):
+    return write_jsonl(tmp_path / "s.jsonl", [
+        assistant_tool("t1", "Bash", {"command": command}),
+        tool_result("t1", output),
+        assistant_text(claim),
+    ])
+
+
+_QUIET = "python -m pytest -q >/dev/null 2>&1"
+
+
+@pytest.mark.parametrize("command, output", [
+    (_QUIET + " || echo '5 passed'", "5 passed"),
+    (_QUIET + " || echo ok", "ok"),
+    (_QUIET + " && echo ok || echo ok", "ok"),
+    (_QUIET + "; echo '5 passed in 0.1s'", "5 passed in 0.1s"),
+    (_QUIET + "; echo OK", "OK"),
+    (_QUIET + " || true; echo '5 passed'", "5 passed"),
+    (_QUIET + " || printf '5 passed\\n'", "5 passed"),
+    (_QUIET + " & echo '5 passed'", "5 passed"),
+    ("! " + _QUIET + "; echo '5 passed'", "5 passed"),
+    ("python -m pytest -q; git status --short", "12 passed in 0.2s"),
+    ("python -m pytest -q; exit 0", "12 passed in 0.2s"),
+    ("! python -m pytest -q", "12 passed in 0.2s"),
+])
+def test_sec250_a_pass_marker_never_lifts_an_or_semicolon_amp_or_bang_mask(tmp_path, command, output):
+    (finding,) = audit(_one_run(tmp_path, command, output)).findings
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "a pass marker in the output is no proof" in finding.evidence
+
+
+@pytest.mark.parametrize("command, output, rewriter", [
+    ("python -m pytest -q 2>&1 | grep -o '[0-9]* passed' | tail -1", "5 passed", "grep"),
+    ("python -m pytest -q 2>&1 | sed 's/failed/passed/' | head -5", "5 passed in 0.1s", "sed"),
+    ("python -m pytest -q 2>&1 | awk '{print \"5 passed\"}' | cat", "5 passed", "awk"),
+    ("python -m pytest -q 2>&1 | grep passed | tee o.txt", "5 passed", "grep"),
+    ('bash -c "python -m pytest -q 2>&1 | grep passed | tail -1"', "5 passed", "grep"),
+])
+def test_sec244_every_stage_after_the_check_must_be_a_verbatim_filter(tmp_path, command, output,
+                                                                      rewriter):
+    (finding,) = audit(_one_run(tmp_path, command, output)).findings
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert f"a pipe through `{rewriter}`" in finding.evidence
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q 2>&1 | tee log.txt | tail -3",
+    "python -m pytest -q | cat | head -5",
+    'bash -c "python -m pytest -q | tail -3"',
+    "cd app && python -m pytest -q 2>&1 | tail -3",
+])
+def test_verbatim_chains_still_verify_on_a_pass_marker(tmp_path, command):
+    (finding,) = audit(_one_run(tmp_path, command, "12 passed in 0.2s")).findings
+    assert finding.verdict is Verdict.VERIFIED
+    assert "exit code hidden by a pipe, output shows a pass" in finding.evidence
+
+
+def test_a_masked_run_without_a_marker_keeps_its_reason(tmp_path):
+    (finding,) = audit(_one_run(tmp_path, _QUIET + " || true", "")).findings
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "exit code hidden by `|| true` and output does not show the result" in finding.evidence
