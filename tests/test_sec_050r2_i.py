@@ -252,3 +252,34 @@ def test_i3_a_real_multiedit_keeps_its_pairs(tmp_path):
     (call,) = session.tool_calls()
     assert call.tool_input["edits"] == edits and session.unrecognised == 0
     assert parser._MAX_EDIT_PAIRS == 200_000
+
+
+# -- SEC-241 leftover: the value count reads UTF-16 and UTF-32 JSON too ----------
+
+def _many_values(n):
+    return '["\\"", ' + "{}," * n + '"y"]'  # an escaped quote first, then n values
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+def test_sec241_too_many_values_refused_in_every_json_encoding(monkeypatch, encoding):
+    from donediff import parser
+    monkeypatch.setattr(parser, "_COUNT_FROM", 100)
+    monkeypatch.setattr(parser, "MAX_VALUES", 1_000)
+    with pytest.raises(ValueError):
+        parser.loads(_many_values(2_000).encode(encoding))
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le", "utf-16-be", "utf-32-le"])
+def test_sec241_a_small_document_still_parses_in_every_encoding(monkeypatch, encoding):
+    from donediff import parser
+    monkeypatch.setattr(parser, "_COUNT_FROM", 100)
+    monkeypatch.setattr(parser, "MAX_VALUES", 1_000)
+    doc = _many_values(200)
+    assert parser.loads(doc.encode(encoding)) == json.loads(doc)
+    assert parser.loads(bytearray(doc.encode(encoding))) == json.loads(doc)
+
+
+def test_sec241_a_bad_byte_is_a_value_error():
+    from donediff import parser
+    with pytest.raises(ValueError):
+        parser.loads(b'{"a": "\xff\xfe\xfd"}')

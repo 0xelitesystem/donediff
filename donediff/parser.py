@@ -92,6 +92,11 @@ def loads(text):
     then counts a nested-bomb line as unreadable instead of crashing. A
     guard test fails if a bare json.loads or json.load appears elsewhere.
     """
+    if isinstance(text, (bytes, bytearray)):
+        # Decoded here, as json.loads would, so the value count reads the
+        # text and not UTF-16 or UTF-32 bytes it cannot read (SEC-241 leftover).
+        # A bad byte raises UnicodeDecodeError, a ValueError.
+        text = text.decode(json.detect_encoding(text), "surrogatepass")
     if too_many_values(text):
         raise ValueError("JSON holds too many values")
     try:
