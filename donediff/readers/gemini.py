@@ -284,6 +284,29 @@ def shell_result(text: str) -> tuple[int | None, str]:
 
 # -- the reader ---------------------------------------------------------------
 
+_CALL_KEYS = ("id", "name", "timestamp", "status", "result", "resultDisplay")
+_ARG_KEYS = ((_SHELL_TOOLS, ("command", "dir_path")),
+             (_WRITE_TOOLS, ("file_path", "content")),
+             (_EDIT_TOOLS, ("file_path", "old_string", "new_string")))
+
+
+def _lean_call(call):
+    """A tool call with only the keys and args _Build reads, so an unmodelled
+    tool's padded input is not held while the whole session is replayed
+    (QA-029, the SEC-293 follow-up to I-1)."""
+    if not isinstance(call, dict):
+        return call
+    lean = {key: call[key] for key in _CALL_KEYS if key in call}
+    args = call.get("args")
+    if isinstance(args, dict):
+        name = call.get("name") if isinstance(call.get("name"), str) else ""
+        name = name[:128]
+        keys = next((keys for tools, keys in _ARG_KEYS if name in tools), None)
+        lean["args"] = (kept_input(args) if keys is None
+                        else {key: args[key] for key in keys if key in args})
+    return lean
+
+
 class _History:
     """The session's messages, replayed the way Gemini's own loader does."""
 
@@ -325,6 +348,9 @@ class _History:
         if record.get("type") not in _TYPES:
             self.session.unrecognised += 1
             return
+        calls = record.get("toolCalls")
+        if isinstance(calls, list):  # held until the replay ends: only what _Build reads (QA-029)
+            record = {**record, "toolCalls": [_lean_call(c) for c in calls]}
         self.messages[record["id"]] = record
 
     def rewind(self, target: str) -> None:

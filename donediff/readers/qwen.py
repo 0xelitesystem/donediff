@@ -201,6 +201,38 @@ def shell_text(text: str) -> tuple[int | None, str]:
 
 # -- the reader ---------------------------------------------------------------
 
+_ARG_KEYS = ((_SHELL_TOOLS, ("command", "directory", "is_background")),
+             (_WRITE_TOOLS, ("file_path", "content")),
+             (_EDIT_TOOLS, ("file_path", "old_string", "new_string")))
+
+
+def _lean_call(call: dict) -> dict:
+    """A functionCall with only the keys and args _Build reads (QA-029)."""
+    lean = {key: call[key] for key in ("id", "name") if key in call}
+    args = call.get("args")
+    if isinstance(args, dict):
+        name = _str(call.get("name"))[:128]
+        keys = next((keys for tools, keys in _ARG_KEYS if name in tools), None)
+        lean["args"] = (kept_input(args) if keys is None
+                        else {key: args[key] for key in keys if key in args})
+    return lean
+
+
+def _lean(record: dict) -> dict:
+    """An assistant record whose tool calls hold only what _Build reads, so an
+    unmodelled tool's padded input is not held while every record is kept for
+    the chain (QA-029, the SEC-293 follow-up to I-1). _Build reads a part's
+    functionCall before its text, so a call part keeps only its call."""
+    message = record.get("message")
+    parts = message.get("parts") if isinstance(message, dict) else None
+    if record.get("type") != "assistant" or not isinstance(parts, list):
+        return record
+    parts = [{"functionCall": _lean_call(part["functionCall"])}
+             if isinstance(part, dict) and isinstance(part.get("functionCall"), dict) else part
+             for part in parts]
+    return {**record, "message": {**message, "parts": parts}}
+
+
 def _rewound(records: list[dict], chain: list[dict]) -> dict[str, list[dict]]:
     """Records a rewind left behind, by branch point: off the active history
     but descended from a record on it, so written after it. File order."""
@@ -422,7 +454,7 @@ def parse_session(path: str | Path) -> Session:
                 continue
             if (isinstance(record, dict) and isinstance(record.get("uuid"), str)
                     and record.get("type") in _TYPES):
-                records.append(record)
+                records.append(_lean(record))
             else:
                 session.unrecognised += 1
     chain = _chain(records)
