@@ -44,3 +44,35 @@ def test_new2_g1_the_file_claim_in_the_same_sentence_is_still_dropped(tmp_path):
     kinds = [t for t, _ in _read(result)]
     assert ClaimType.FILE_CREATED not in kinds
     assert (ClaimType.TESTS_PASS, Verdict.CONTRADICTED) in _read(result), _read(result)
+
+
+# -- NEW2-G-2: the keycap exemption covers only a digit base ------------------------
+
+_KEY = "\ufe0f\u20e3"  # variation selector 16, then the keycap mark
+
+
+def _flagged(result):
+    return "hidden_characters" in {s.kind for s in result.gaming_signals}
+
+
+@pytest.mark.parametrize("text", [
+    "All tests pa" + _KEY + "ss.",
+    "Committed as 1a2b" + _KEY + "3c4d.",
+])
+def test_new2_g2_a_keycap_after_a_letter_still_flags(tmp_path, text):
+    from conftest import assistant_text
+    result = _audit(tmp_path, _failing_run() + [assistant_text(text)])
+    assert _flagged(result)
+
+
+def test_new2_g2_a_keycap_after_a_letter_flags_in_fold_text():
+    from donediff.claims import fold_text
+    assert fold_text("pa" + _KEY + "ss")[1]
+    assert fold_text("1a2b" + _KEY + "3c4d")[1]
+
+
+@pytest.mark.parametrize("text", ["1" + _KEY + " Ran the tests.", "#" + _KEY + " Done.",
+                                  "*" + _KEY + " Done.", "9" + _KEY + " All tests pass."])
+def test_new2_g2_a_real_keycap_emoji_still_raises_no_flag(text):
+    from donediff.claims import fold_text
+    assert not fold_text(text)[1]

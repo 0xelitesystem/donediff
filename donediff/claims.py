@@ -223,11 +223,13 @@ def fold_text(text: str) -> tuple[str, bool]:
 
     if _IGNORABLE.search(text) or any(unicodedata.category(c) == "Cf" or c in _FILLERS
                                       for c in text):
-        # A selector before the keycap mark (1, U+FE0F, U+20E3) draws a
-        # keycap emoji, so it hides nothing there either (G-1).
+        # A selector between a digit and the keycap mark (1, U+FE0F, U+20E3)
+        # draws a keycap emoji, so it hides nothing there either (G-1). A
+        # keycap's base is only 0-9, # or *: after a letter it still flags.
         changed = any(hidden(c) and c != _JOINER and not (
             _SELECTOR.match(c) and not (i and text[i - 1].isascii() and text[i - 1].isalnum()
-                                        and text[i + 1:i + 2] != _KEYCAP))
+                                        and not (text[i - 1].isdigit()
+                                                 and text[i + 1:i + 2] == _KEYCAP)))
             for i, c in enumerate(text))
         text = "".join(c for c in text if not hidden(c))
     text = text.replace(" ", "\n").replace(" ", "\n")
