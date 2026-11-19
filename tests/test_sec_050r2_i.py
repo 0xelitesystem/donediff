@@ -211,3 +211,44 @@ def test_g2_prose_is_no_file_claim(text):
 ])
 def test_g2_real_file_claims_still_read(text, detail):
     assert _file_claims(text) == [detail]
+
+
+# -- I-3: MultiEdit edit pairs kept per transcript are bounded ---------------------
+
+def test_i3_edit_pairs_past_the_budget_are_dropped_and_counted(tmp_path, monkeypatch):
+    from conftest import assistant_tool, tool_result
+    from donediff import parser
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10_000, raising=False)
+    path = tmp_path / "multi.jsonl"
+    edits = [{"new_string": "a"} for _ in range(5_000)]
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(60):  # 300k one-character pairs in all
+            fh.write(json.dumps(assistant_tool(f"m{i}", "MultiEdit",
+                                               {"file_path": "a.py", "edits": edits})) + "\n")
+            fh.write(json.dumps(tool_result(f"m{i}", "ok")) + "\n")
+    gc.collect()
+    tracemalloc.start()
+    try:
+        session = parser.parse_transcript(path)
+        gc.collect()
+        kept = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    calls = session.tool_calls()
+    assert len(calls) == 60 and all(e.file_path == "a.py" for e in calls)
+    assert [len(e.tool_input.get("edits", ())) for e in calls[:3]] == [5_000, 5_000, 0]
+    assert session.unrecognised == 58
+    assert kept < 2 * path.stat().st_size, kept  # was ~15x
+
+
+def test_i3_a_real_multiedit_keeps_its_pairs(tmp_path):
+    from conftest import assistant_tool, tool_result, write_jsonl
+    from donediff import parser
+    edits = [{"old_string": "assert x", "new_string": "pass"}, {"old_string": "a", "new_string": "b"}]
+    path = write_jsonl(tmp_path / "real.jsonl", [
+        assistant_tool("m1", "MultiEdit", {"file_path": "tests/test_a.py", "edits": edits}),
+        tool_result("m1", "ok")])
+    session = parser.parse_transcript(path)
+    (call,) = session.tool_calls()
+    assert call.tool_input["edits"] == edits and session.unrecognised == 0
+    assert parser._MAX_EDIT_PAIRS == 200_000

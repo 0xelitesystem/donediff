@@ -106,6 +106,11 @@ def loads(text):
 # not held for the whole audit (SEC-231: 25x the file size in memory).
 _INPUT_KEYS = ("command", "file_path", "content", "old_string", "new_string")
 _EDIT_KEYS = ("old_string", "new_string")
+# Edit pairs kept per transcript (I-3): one kept pair costs about 15 times its
+# JSON, so 512 MiB of tiny MultiEdit pairs held 7.6 GB. Past the budget a
+# call's pairs are dropped and the call counted unreadable; a real MultiEdit
+# holds a handful of pairs. About 50 MB at most.
+_MAX_EDIT_PAIRS = 200_000
 
 
 def kept_input(tool_input) -> dict:
@@ -306,6 +311,7 @@ def parse_transcript(path: str | Path) -> Session:
     shell_ids: set[str] = set()  # every background shell id: its notice is no delivery
     index = 0
     line_no = 0
+    edit_pairs = 0  # kept edit pairs, up to _MAX_EDIT_PAIRS (I-3)
     clock = float("-inf")
 
     if path.stat().st_size > MAX_FILE:
@@ -392,6 +398,11 @@ def parse_transcript(path: str | Path) -> Session:
                             result_seen=False,
                         )
                         event.check_types = check_types(event.command)
+                        if "edits" in event.tool_input:
+                            edit_pairs += len(event.tool_input["edits"])
+                            if edit_pairs > _MAX_EDIT_PAIRS:
+                                del event.tool_input["edits"]
+                                session.unrecognised += 1
                         session.events.append(event)
                         pending[event.tool_id] = event
                         index += 1
