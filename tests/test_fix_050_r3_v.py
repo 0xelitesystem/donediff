@@ -219,3 +219,42 @@ def test_sec292_r3_a_status_read_outside_the_canonical_forms_keeps_nothing(tmp_p
 ])
 def test_sec292_r3_the_canonical_status_forms_keep_the_status(tail):
     assert _kinds(_QUIET + tail) == []
+
+
+# -- Row 5, SEC-250: only a statement that provably prints nothing lets a marker count
+
+@pytest.mark.parametrize("before", [
+    "pushd '5 passed'",
+    "set -x; X='5 passed'",
+    "X='5 passed'; set",
+    "export X='5 passed'; export -p",
+    "source ./m.sh",
+    "x=$(echo${IFS}5${IFS}passed>&2)",
+    "cd -",
+    "export X=$(cat notes.txt)",
+    "cd app | echo '5 passed'",
+    "popd",
+])
+def test_sec250_r3_a_marker_may_come_from_a_statement_that_prints(tmp_path, before):
+    command = before + "; " + _QUIET + " | tail -1"
+    finding, signals = _verdict(tmp_path, command, "5 passed")
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "in the same call, so a pass marker in the output is no proof" in finding.evidence
+    assert "masked_exit_code" in signals
+
+
+@pytest.mark.parametrize("before", [
+    "cd app",
+    "set -euo pipefail",
+    "set -e",
+    "export CI=1",
+    "unset CI",
+    "CI=1",
+    "X='5 passed'",
+    "source .venv/bin/activate",
+    ". venv/Scripts/activate",
+])
+def test_sec250_r3_silent_statements_still_let_a_marker_verify(tmp_path, before):
+    finding, _ = _verdict(tmp_path, before + "; python -m pytest -q 2>&1 | tail -3",
+                          "12 passed in 0.2s")
+    assert finding.verdict is Verdict.VERIFIED

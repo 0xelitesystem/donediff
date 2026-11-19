@@ -98,9 +98,34 @@ _VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
 # output still tells, so a pass marker may lift them.
 _FLAG_MASKS = frozenset({"--passWithNoTests", "--exit-zero"})
 _FILTER_EXTRA = re.compile(r"<|>\(|\s(?:-c|--bytes)(?![A-Za-z-])")
-# Statements that print nothing of their own, so a marker cannot come from them (SEC-250).
-_SILENT = frozenset({"cd", "pushd", "popd", "set", "export", "unset", "source", ".",
-                     "set-location", "sl"})
+# A plain assignment, which prints nothing: no `$`, backtick or redirect in its value.
+_PLAIN_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=(?:'[^']*'|\"[^\"$`\\]*\"|[^$`<>\s'\"\\])*")
+
+
+def _silent(stage: str) -> bool:
+    """True only for a stage that provably prints nothing of its own, so a
+    marker cannot come from it (SEC-250, fail closed): `cd <dir>` (not
+    `cd -`), source or `.` of a virtualenv activate script, `set` with only
+    -e, -u, -o pipefail, `export` or `unset` of plain names or name=value with
+    no `$`, backtick or redirect, or a plain assignment. Anything running
+    `$(..)`, a backtick or `<(..)` may print."""
+    if re.search(r"\$\(|`|<\(", stage):
+        return False
+    if _PLAIN_ASSIGNMENT.fullmatch(stage.strip()):
+        return True
+    words = command_words(normalize_stage(stage))
+    prog = words[0] if words else ""
+    if prog in ("cd", "set-location", "sl"):
+        return len(words) == 2 and words[1] != "-"
+    if prog in ("source", "."):
+        return len(words) == 2 and bool(re.search(r"(?:^|/)activate(?:\.\w+)?$", words[1]))
+    if prog == "set":
+        return len(words) > 1 and all(
+            re.fullmatch(r"[-+][eu]+|-o|pipefail|errexit|nounset", w) for w in words[1:])
+    if prog in ("export", "unset"):
+        return len(words) > 1 and all(
+            re.fullmatch(r"[A-Za-z_]\w*(?:=[^$`<>]*)?", w) for w in words[1:])
+    return False
 
 
 def _filter_after_check(pipeline: str) -> str | None:
@@ -139,10 +164,9 @@ def _marker_blocker(how: str, snippet: str, command: str = "") -> str | None:
             if not stages or (at >= 0 and (at <= st.start < at + len(snippet)
                                            or st.start <= at < st.end)):
                 continue  # the masked pipe itself, or the wrapper (`bash -c "..."`) that holds it
-            prog = program(stages[0])
-            if prog and prog not in _SILENT and not re.fullmatch(r"[A-Za-z_]\w*=\S*",
-                                                                 stages[0].strip()):
-                return f"`{prog}` in the same call"
+            loud = next((s for s in stages if not _silent(s)), None)
+            if loud is not None:
+                return f"`{program(loud) or loud.strip()[:20]}` in the same call"
         return None
     return f"`{how}`"
 
