@@ -157,7 +157,9 @@ donediff now reads more coding agents than Claude Code.
   missing path inside the project is not verified by a write elsewhere.
 - SEC-228: a number read from a log or a claim is capped at 18 significant
   digits, so one over 4300 digits no longer crashes a reader; an overlong
-  exit code reads as a failure, an overlong count as no count.
+  exit code in a run's result reads as a failure, an overlong count as no
+  count. An exit code written in the command itself is read as the shell
+  reads it (SEC-252).
 - SEC-229: the Claude Code reader replaces invalid UTF-8 instead of stopping
   with a traceback; the bad line is counted as unreadable.
 - SEC-230: Goose and opencode refuse a session table that is virtual or has
@@ -209,6 +211,19 @@ donediff now reads more coding agents than Claude Code.
   no failing Bash record and no long output after it.
 - SEC-247: path checks read every link's target before anything follows it;
   network targets and `/net` and `/Network` automount paths are refused.
+- SEC-250: a pass marker no longer lifts an exit code hidden by `||`, `;`,
+  `&` or `!`, since another command in the call can print one
+  (`pytest >/dev/null || echo '5 passed'`); such a run leaves the claim
+  UNVERIFIED.
+- SEC-251: a trap whose handler exits 0 (`trap 'exit 0' EXIT`, PowerShell
+  `trap { exit 0 }`) is a swallowed failure, and a shell started through
+  `timeout`, `gtimeout`, `stdbuf` or `xargs` is read for masking too.
+- SEC-252: an exit code written in a command (`exit N`, `return N`) is read
+  as bash reads it: up to 19 digits, a code that is 0 mod 256 inside the
+  64-bit range exits 0 (`exit 1152921504606846976`), and a number outside
+  that range is a failure.
+- SEC-258: the value count that guards JSON parsing (SEC-241) runs in linear
+  time; one log line cut mid-write had taken minutes.
 
 ### Security
 
