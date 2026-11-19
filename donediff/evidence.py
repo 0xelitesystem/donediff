@@ -780,7 +780,13 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
         # The wait keeps the status only as the call's last statement, right
         # after the check's `&` (V-1): `& wait $! || true`, `& wait $!; true`
         # and `& true & wait $!` (the other job) exit 0.
-        waited = end + 2 == len(statements) and bool(_WAIT_FOR_JOB.match(norms[end + 1]))
+        # The wait must not itself go to the background (`& wait $! &`), and
+        # `%1` or `-n` names the check only when no job went to the background
+        # before it (`true & pytest & wait %1` waits for `true`).
+        bg_before = any(st.op == "&" for st in statements[:pos])
+        waited = (end + 2 == len(statements) and statements[end + 1].op != "&"
+                  and bool(_WAIT_FOR_JOB.match(norms[end + 1]))
+                  and not (bg_before and re.search(r"%1|-n", norms[end + 1])))
         if checks[pos] and statements[end].op == "&" and not read_after and not waited:
             # A check sent to the background (`pytest & wait`), or cmd's
             # `a & b`: the call's status is whatever runs after it.

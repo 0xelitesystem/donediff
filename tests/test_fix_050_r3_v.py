@@ -147,3 +147,29 @@ def test_sec251_r3_a_command_claim_after_generated_text_is_unverified(tmp_path, 
 def test_sec251_r3_literal_text_and_harmless_traps_are_no_mask(tmp_path, form):
     assert _kinds(form + "; python -m pytest -q") == []
     assert zero_exit_trap(form + "; " + _HELLO) is None
+
+
+# -- Row 3, SEC-290 (V-1): a wait that does not return the check's own status ----
+
+@pytest.mark.parametrize("command", [
+    "true & " + _QUIET + " & wait %1",
+    _QUIET + " & wait $! &",
+    _QUIET + " & wait $!&",
+    "true & sleep 1; " + _QUIET + " & wait -n",
+    "sleep 1 & " + _QUIET + " & wait -n",
+])
+def test_sec290_r3_a_wait_for_another_job_or_in_the_background_is_a_mask(tmp_path, command):
+    assert "masked_exit_code" in _kinds(command)
+    finding, _ = _verdict(tmp_path, command)
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("command", [
+    _QUIET + " & wait $!",
+    _QUIET + " & wait %1",
+    _QUIET + " & wait -n",
+    "true & " + _QUIET + " & wait $!",
+    "true & " + _QUIET + " & wait %%",
+])
+def test_sec290_r3_a_wait_for_the_check_job_keeps_its_status(command):
+    assert _kinds(command) == []
