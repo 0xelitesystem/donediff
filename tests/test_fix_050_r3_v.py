@@ -290,3 +290,37 @@ def test_sec253_r3_if_present_by_prefix_or_variable_is_never_a_check(tmp_path, c
 ])
 def test_sec253_r3_npm_test_without_if_present_is_a_check(command):
     assert check_types(command) & CHECK_TYPES
+
+
+# -- Row 7, SEC-244: a filter whose flags are not provably line-keeping is no proof --
+
+@pytest.mark.parametrize("command, name", [
+    ("python -m pytest -q 2>&1 | tail -18c", "tail"),
+    ("python -m pytest -q 2>&1 | tail --byt 18", "tail"),
+    ("python -m pytest -q 2>&1 | tail -qc 18", "tail"),
+    ("python -m pytest -q 2>&1 | head --by=40", "head"),
+    ("python -m pytest -q 2>&1 | tail -f", "tail"),
+    ("python -m pytest -q 2>&1 | cat -A", "cat"),
+    ("python -m pytest -q 2>&1 | tee --output-error=warn log.txt", "tee"),
+    ("python -m pytest -q | Out-String -Width 9", "out-string"),
+])
+def test_sec244_r3_a_filter_flag_off_the_allow_list_is_no_proof(tmp_path, command, name):
+    finding, _ = _verdict(tmp_path, command, "5 passed in 0.12s")
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert f"a pipe through `{name}`" in finding.evidence
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q 2>&1 | tail -n 3",
+    "python -m pytest -q 2>&1 | tail -3",
+    "python -m pytest -q 2>&1 | tail -n3",
+    "python -m pytest -q 2>&1 | head -n +20",
+    "python -m pytest -q 2>&1 | tail --lines=3",
+    "python -m pytest -q 2>&1 | tee -a log.txt",
+    "python -m pytest -q 2>&1 | cat -",
+    "python -m pytest -q | Select-Object -Last 5",
+    "python -m pytest -q | Out-String -Stream",
+])
+def test_sec244_r3_line_cuts_from_the_allow_list_still_verify(tmp_path, command):
+    finding, _ = _verdict(tmp_path, command, "12 passed in 0.2s")
+    assert finding.verdict is Verdict.VERIFIED

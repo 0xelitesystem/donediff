@@ -98,6 +98,15 @@ _VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
 # output still tells, so a pass marker may lift them.
 _FLAG_MASKS = frozenset({"--passWithNoTests", "--exit-zero"})
 _FILTER_EXTRA = re.compile(r"<|>\(|\s(?:-c|--bytes)(?![A-Za-z-])")
+# The only words a verbatim filter may take, so it provably passes whole lines
+# (SEC-244, fail closed): `tail -18c`, `tail --byt 18`, `tail -qc 18` cut bytes.
+_LINE_CUT = r"-|[+-]?\d+|-n|-[qv]|--quiet|--silent|--verbose|-n[+-]?\d+|--lines=[+-]?\d+"
+_FILTER_WORDS = {
+    "head": _LINE_CUT, "tail": _LINE_CUT,
+    "tee": r"-a|--append|-i|--ignore-interrupts|[^-].*",
+    "cat": r"-", "less": r"", "more": r"", "out-host": r"", "out-string": r"-stream",
+    "select-object": r"-(?:first|last|skip|skiplast)|\d+", "select": r"-(?:first|last|skip|skiplast)|\d+",
+}
 # A plain assignment, which prints nothing: no `$`, backtick or redirect in its value.
 _PLAIN_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=(?:'[^']*'|\"[^\"$`\\]*\"|[^$`<>\s'\"\\])*")
 
@@ -142,7 +151,9 @@ def _filter_after_check(pipeline: str) -> str | None:
             # `tee >(..)`), no byte count (`tail -c`), and (tee aside) no file (SEC-244 leftover).
             operands = [w for w in command_words(normalize_stage(stage))[1:]
                         if not w.startswith("-") and not w.lstrip("+").isdigit()]
-            if (name not in _VERBATIM_FILTERS or _FILTER_EXTRA.search(stage)
+            flags_ok = all(re.fullmatch(_FILTER_WORDS.get(name, r""), w.lower())
+                           for w in command_words(normalize_stage(stage))[1:])
+            if (name not in _VERBATIM_FILTERS or _FILTER_EXTRA.search(stage) or not flags_ok
                     or (name != "tee" and operands)):
                 return name or "?"
     return None
