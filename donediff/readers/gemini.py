@@ -58,7 +58,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import epoch, loads
+from ..parser import epoch, kept_input, loads
 from ..shell import is_remote_path
 from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, _join, _lines, clean_path
@@ -439,7 +439,7 @@ class _Build:
                           "old_string": _str(args.get("old_string")),
                           "new_string": _str(args.get("new_string"))}
         else:
-            action, tool_input = OTHER, args
+            action, tool_input = OTHER, kept_input(args)  # only what the engine reads (I-1)
         event = Event(kind=EventKind.TOOL_CALL, index=self.index, timestamp=self.timestamp,
                       tool_name=name, action=action, tool_id=call_id, tool_input=tool_input,
                       t=self.clock, cwd=cwd, result_seen=False)

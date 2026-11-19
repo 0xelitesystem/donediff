@@ -296,7 +296,7 @@ def test_other_tools_become_other_events(tmp_path):
     events = parse(tmp_path, lines).tool_calls()
     assert [(e.tool_name, e.tool_action) for e in events] == [
         ("view_image", OTHER), ("update_plan", OTHER), ("current_time", OTHER)]
-    assert events[1].tool_input == {"plan": [{"step": "x", "status": "completed"}]}
+    assert events[0].tool_input == {} and events[1].tool_input == {}  # unread keys not kept (I-1)
 
 
 # -- running and wait -----------------------------------------------------------------

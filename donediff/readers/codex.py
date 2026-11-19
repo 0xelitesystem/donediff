@@ -57,7 +57,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import complete_background, epoch, loads
+from ..parser import complete_background, epoch, kept_input, loads
 from ..parser import lines as _lines
 from ..shell import is_remote_path
 from . import codex_code_mode as code_mode
@@ -468,7 +468,9 @@ class _Parse:
 
     def other(self, name: str, call_id: str, tool_input: dict,
               track: bool = True) -> list[Event]:
-        events = [self._event(name, OTHER, call_id, tool_input)]
+        # Only the input keys the engine reads, as for Claude Code (SEC-231):
+        # an unmodelled tool's padding is not held for the whole audit (I-1).
+        events = [self._event(name, OTHER, call_id, kept_input(tool_input))]
         if track:
             self._track(call_id, events)
         return events
