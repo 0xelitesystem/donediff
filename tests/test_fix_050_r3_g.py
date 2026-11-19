@@ -76,3 +76,50 @@ def test_new2_g2_a_keycap_after_a_letter_flags_in_fold_text():
 def test_new2_g2_a_real_keycap_emoji_still_raises_no_flag(text):
     from donediff.claims import fold_text
     assert not fold_text(text)[1]
+
+
+# -- NEW2-G-3: a library-named file counts as written only under its exact name -------
+
+def _created(tmp_path, records):
+    from conftest import write_jsonl
+    from donediff.claims import extract_claims
+    from donediff.parser import parse_transcript
+    from donediff.verify import verify_claims
+    session = parse_transcript(write_jsonl(tmp_path / "lib.jsonl", records))
+    return [f for f in verify_claims(session, extract_claims(session), check_disk=False)
+            if f.claim.type is ClaimType.FILE_CREATED]
+
+
+def _write(tool_id, path, ok=True):
+    from conftest import assistant_tool, tool_result
+    return [assistant_tool(tool_id, "Write", {"file_path": path, "content": "x = 1\n"}),
+            tool_result(tool_id, "File created successfully" if ok else
+                        "Error: permission denied", is_error=not ok)]
+
+
+@pytest.mark.parametrize("writes, text", [
+    (_write("w1", "/home/dev/app/three.js"), "We created a new Three.js scene."),
+    (_write("w1", "/home/dev/app/vendor/three.js"), "We created a new Three.js scene."),
+    (_write("w1", "/home/dev/app/vendor/three.js"), "I created Three.js."),
+    (_write("w1", "/home/dev/app/three.js"), "I created Three.js."),
+    (_write("w1", "/home/dev/app/node.js", ok=False), "I created a Node.js app."),
+    (_write("w1", "/home/dev/app/chart.js", ok=False) + _write("w2", "/home/dev/app/app.js"),
+     "We added Chart.js and created Chart.js graphs."),
+])
+def test_new2_g3_library_prose_is_no_claim_after_a_lower_case_write(tmp_path, writes, text):
+    from conftest import assistant_text
+    assert _created(tmp_path, writes + [assistant_text(text)]) == []
+
+
+def test_new2_g3_the_exact_name_written_in_a_folder_is_still_a_verified_claim(tmp_path):
+    from conftest import assistant_text
+    (finding,) = _created(tmp_path, _write("w1", "/home/dev/app/vendor/three.js")
+                          + [assistant_text("I created three.js.")])
+    assert finding.verdict is Verdict.VERIFIED, finding.evidence
+
+
+def test_new2_g3_a_failed_write_of_the_exact_name_is_still_caught(tmp_path):
+    from conftest import assistant_text
+    (finding,) = _created(tmp_path, _write("w1", "/home/dev/app/chart.js", ok=False)
+                          + [assistant_text("I created chart.js for the dashboard.")])
+    assert finding.verdict is Verdict.UNVERIFIED, finding.evidence

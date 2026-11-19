@@ -277,9 +277,10 @@ def _text_claims(text: str, index: int, written: frozenset = frozenset()) -> lis
 
 
 def extract_claims(session: Session) -> list[Claim]:
-    # File names the session wrote or edited, lower case: a file named like a
-    # library (chart.js) that the agent wrote is its file, not the library (QA-030).
-    written = frozenset(_base(e.file_path).lower() for e in session.events
+    # File names the session wrote or edited, exact case as verify matches
+    # them: a file named like a library (chart.js) that the agent wrote is its
+    # file, not the library (QA-030), but "Chart.js" prose is not (NEW2-G-3).
+    written = frozenset(_base(e.file_path) for e in session.events
                         if e.kind is EventKind.TOOL_CALL and e.is_file_edit() and e.file_path)
     claims: list[Claim] = []
     for event in session.events:
@@ -321,7 +322,7 @@ def _bare_file(name: str | None, written: frozenset = frozenset()) -> str | None
     (Node.js) unless the session wrote or edited a file of that name (QA-030)."""
     if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS:
         return None
-    if name.lower() in _LIBRARY_NAMES and name.lower() not in written:
+    if name.lower() in _LIBRARY_NAMES and name not in written:
         return None
     return name
 
