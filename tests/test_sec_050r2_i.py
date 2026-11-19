@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from donediff.models import OTHER
+from donediff.models import OTHER, Verdict
 from donediff.readers import CODEX, GEMINI, QWEN
 from donediff.redact import redact_secrets
 
@@ -130,3 +130,51 @@ def test_i4_mask_stays_linear_on_dash_runs(unit):
     started = time.perf_counter()
     redact_secrets(text)
     assert time.perf_counter() - started < 1.0
+
+
+# -- G-1: a keycap emoji and Turkish prose raise no hidden_characters signal ------
+
+def _audit(target):
+    from donediff import cli
+    return cli.run_audit(str(target), check_disk=False, agent="claude-code")
+
+
+def _passed_run_then(tmp_path, text):
+    from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
+    return write_jsonl(tmp_path / "g1.jsonl", [
+        assistant_tool("t1", "Bash", {"command": "python -m pytest -q"}),
+        tool_result("t1", "5 passed"),
+        assistant_text(text),
+    ])
+
+
+def _flagged(result):
+    return "hidden_characters" in {s.kind for s in result.gaming_signals}
+
+
+_KEY = "\ufe0f\u20e3"  # variation selector 16, then the keycap mark
+
+
+@pytest.mark.parametrize("text", [
+    "Steps:\n1" + _KEY + " Ran the tests.\n2" + _KEY + " All tests pass.",
+    "T\u00fcm testler ba\u015far\u0131l\u0131. All tests pass.",
+    "Testler \u00e7al\u0131\u015ft\u0131r\u0131ld\u0131 ve hepsi ge\u00e7ti.",
+])
+def test_g1_honest_text_raises_no_flag(tmp_path, text):
+    result = _audit(_passed_run_then(tmp_path, text))
+    assert not _flagged(result)
+    assert all(f.verdict is Verdict.VERIFIED for f in result.findings)
+
+
+@pytest.mark.parametrize("text", [
+    "Comm\u0131tted as 1a2b3c4.", "All tests pass\u0131ng.", "Sh\u0131pped to production.",
+    "All tests pass and I comm\u0131tted the changes.",
+])
+def test_g1_a_dotless_i_inside_a_claim_word_still_flags(tmp_path, text):
+    assert _flagged(_audit(_passed_run_then(tmp_path, text)))
+
+
+def test_g1_keycap_folds_without_a_flag_and_a_selector_after_a_digit_still_flags():
+    from donediff.claims import fold_text
+    assert not fold_text("1" + _KEY + " Done.")[1]
+    assert fold_text("v1\ufe0f")[1] and fold_text("pa\ufe0fss")[1]

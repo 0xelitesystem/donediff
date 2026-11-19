@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .claims import fold_text
+from .claims import disguised
 from .evidence import masking
 from .models import EDIT, MULTI_EDIT, WRITE, Event, EventKind, GamingSeverity, GamingSignal, Session
 from .redact import redact_secrets
@@ -146,7 +146,7 @@ def detect_gaming(session: Session) -> list[GamingSignal]:
     signals: list[GamingSignal] = []
     for event in session.events:
         signals.extend(signals_for_event(event))
-        if event.kind is EventKind.TEXT and event.text and fold_text(event.text)[1]:
+        if event.kind is EventKind.TEXT and event.text and disguised(event.text):
             # SEC-245: a zero-width or look-alike character can hide a claim
             # from a reader; donediff reads the folded text and says so.
             signals.append(GamingSignal(

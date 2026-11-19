@@ -182,6 +182,7 @@ _IGNORABLE = re.compile(
 # after an emoji (✔️) is ordinary text; after a Latin letter or a digit it
 # only hides. Like the joiner, it raises the flag only there.
 _SELECTOR = re.compile("[᠋-᠍᠏︀-️\U000e0100-\U000e01ef]")
+_KEYCAP = "⃣"
 # Cyrillic and Greek letters drawn like Latin ones, folded only inside a word
 # that also holds Latin letters (a mixed-script word), so Russian or Greek
 # prose stays as written.
@@ -211,8 +212,11 @@ def fold_text(text: str) -> tuple[str, bool]:
 
     if _IGNORABLE.search(text) or any(unicodedata.category(c) == "Cf" or c in _FILLERS
                                       for c in text):
+        # A selector before the keycap mark (1, U+FE0F, U+20E3) draws a
+        # keycap emoji, so it hides nothing there either (G-1).
         changed = any(hidden(c) and c != _JOINER and not (
-            _SELECTOR.match(c) and not (i and text[i - 1].isascii() and text[i - 1].isalnum()))
+            _SELECTOR.match(c) and not (i and text[i - 1].isascii() and text[i - 1].isalnum()
+                                        and text[i + 1:i + 2] != _KEYCAP))
             for i, c in enumerate(text))
         text = "".join(c for c in text if not hidden(c))
     text = text.replace(" ", "\n").replace(" ", "\n")
@@ -229,19 +233,41 @@ def fold_text(text: str) -> tuple[str, bool]:
     return _WORD_RUN.sub(fold, text), changed
 
 
+_DOTLESS_I = "ı"
+
+
+def disguised(text: str) -> bool:
+    """fold_text's flag, except that a Turkish dotless i raises it only when
+    folding it changes the claims read (G-1): Turkish prose is not a disguise,
+    "commıtted" is. The flag's test reads the text with the dotless i as a
+    letter that never folds; a claim that appears only when it folds was hidden."""
+    if fold_text(text.replace(_DOTLESS_I, "i"))[1]:
+        return True
+    if _DOTLESS_I not in text:
+        return False
+    def read(t: str) -> list:
+        return [(c.type, c.detail) for c in _text_claims(t, 0)]
+    return read(text) != read(text.replace(_DOTLESS_I, "ɩ"))
+
+
+def _text_claims(text: str, index: int) -> list[Claim]:
+    claims: list[Claim] = []
+    # Masked on the raw text, before markdown noise is stripped: a quote
+    # is shown in every report (SEC-235).
+    for sentence in _sentences(redact_secrets(fold_text(text)[0])):
+        if len(sentence) > 400:
+            continue  # code blocks / pasted output, not prose
+        if _DISQUALIFIERS.search(sentence):
+            continue
+        claims.extend(_sentence_claims(sentence, index))
+    return claims
+
+
 def extract_claims(session: Session) -> list[Claim]:
     claims: list[Claim] = []
     for event in session.events:
-        if event.kind is not EventKind.TEXT:
-            continue
-        # Masked on the raw text, before markdown noise is stripped: a quote
-        # is shown in every report (SEC-235).
-        for sentence in _sentences(redact_secrets(fold_text(event.text)[0])):
-            if len(sentence) > 400:
-                continue  # code blocks / pasted output, not prose
-            if _DISQUALIFIERS.search(sentence):
-                continue
-            claims.extend(_sentence_claims(sentence, event.index))
+        if event.kind is EventKind.TEXT:
+            claims.extend(_text_claims(event.text, event.index))
     return _dedupe(claims)
 
 
