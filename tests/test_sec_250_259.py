@@ -13,6 +13,7 @@ import pytest
 
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 from donediff import cli, parser
+from donediff.evidence import masking
 from donediff.models import Verdict
 
 
@@ -135,3 +136,74 @@ def test_a_masked_run_without_a_marker_keeps_its_reason(tmp_path):
     (finding,) = audit(_one_run(tmp_path, _QUIET + " || true", "")).findings
     assert finding.verdict is Verdict.UNVERIFIED
     assert "exit code hidden by `|| true` and output does not show the result" in finding.evidence
+
+
+# -- SEC-251: traps that exit 0, and shells started through launchers ----------
+
+def _kinds(command: str) -> list[str]:
+    return [kind for kind, _, _ in masking(command)]
+
+
+@pytest.mark.parametrize("command", [
+    "trap 'exit 0' EXIT; " + _QUIET,
+    'trap "exit 0" 0; ' + _QUIET,
+    "trap -- 'echo bye; exit 0' EXIT; " + _QUIET,
+    "trap 'exit 0' ERR; " + _QUIET,
+    _QUIET + "; trap 'exit 0' EXIT",
+    "trap { exit 0 }; python -m pytest -q",
+    "trap {exit 0}; python -m pytest -q",
+    "trap { Write-Host bye; exit 0 }; python -m pytest -q",
+    "trap [System.Exception] { exit 0 }; python -m pytest -q",
+    "bash -c \"trap 'exit 0' EXIT; " + _QUIET + "\"",
+])
+def test_sec251_a_trap_that_exits_zero_swallows_the_failure(tmp_path, command):
+    assert "swallowed_failure" in _kinds(command)
+    result = audit(_one_run(tmp_path, command, "5 passed"))
+    assert result.findings[0].verdict is Verdict.UNVERIFIED
+    assert "swallowed_failure" in {s.kind for s in result.gaming_signals}
+
+
+@pytest.mark.parametrize("command", [
+    "trap 'echo cleanup' EXIT; python -m pytest -q",
+    "trap 'rc=$?; rm -f t.txt; exit $rc' EXIT; python -m pytest -q",
+    "trap 'exit 1' EXIT; python -m pytest -q",
+    "trap 'exit 0' INT TERM; python -m pytest -q",
+    "trap 'exit' EXIT; python -m pytest -q",
+    "trap { Write-Host failed; exit 1 }; python -m pytest -q",
+])
+def test_sec251_other_traps_are_no_mask(command):
+    assert _kinds(command) == []
+
+
+_SWALLOW = "'" + _QUIET + " || true'"
+
+
+@pytest.mark.parametrize("command", [
+    "timeout 60 bash -c " + _SWALLOW,
+    "timeout -s KILL 60 bash -c " + _SWALLOW,
+    "gtimeout 60 bash -c " + _SWALLOW,
+    "/usr/bin/timeout 60 bash -c " + _SWALLOW,
+    "nohup bash -c " + _SWALLOW,
+    "stdbuf -oL bash -c " + _SWALLOW,
+    "stdbuf -o L bash -c " + _SWALLOW,
+    "echo x | xargs sh -c " + _SWALLOW,
+    "echo x | xargs -n 1 -I {} sh -c " + _SWALLOW,
+])
+def test_sec251_masking_reads_a_shell_started_through_a_launcher(command):
+    assert "swallowed_failure" in _kinds(command)
+
+
+def test_sec251_timeout_wrapped_swallow_is_unverified(tmp_path):
+    result = audit(_one_run(tmp_path, "timeout 60 bash -c " + _SWALLOW, "5 passed"))
+    assert result.findings[0].verdict is Verdict.UNVERIFIED
+    assert "swallowed_failure" in {s.kind for s in result.gaming_signals}
+
+
+def test_named_status_keeps_the_plain_wrapper_form():
+    # COMMAND_OK: xargs does not hand on a command's own status, so named_status
+    # does not read through launchers (unchanged by SEC-251).
+    from donediff.shell import named_status, starts_command
+    target = lambda stage: starts_command(stage, ["python", "hello.py"])  # noqa: E731
+    assert named_status("echo x | xargs sh -c 'python hello.py'", target) is None
+    assert named_status("timeout 60 bash -c 'python hello.py'", target) is None
+    assert named_status("bash -c 'python hello.py'", target) == (True, True, "")

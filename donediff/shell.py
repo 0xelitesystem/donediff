@@ -253,11 +253,43 @@ def normalize_stage(stage: str, _depth: int = 0) -> str:
     return " ".join([head] + rest)
 
 
-def wrapper_inner(stage: str) -> str | None:
-    """The command a `bash -c "..."` or `cmd /c "..."` stage runs, else None."""
+# Programs that start the command after their own words. Masking reads a
+# shell started through them too (SEC-251); a named command's own status
+# does not pass through xargs, so named_status keeps the plain form.
+_TIMEOUTS = frozenset({"timeout", "gtimeout"})
+_LAUNCHER_ARG_FLAGS = {
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "xargs": frozenset({"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args",
+                        "--max-procs", "--max-lines", "--delimiter", "--arg-file", "--eof",
+                        "--max-chars"}),
+}
+
+
+def _skip_launcher(words: list[str], arg_flags: frozenset[str]) -> list[str]:
+    """Drop a launcher, its options and their values: `xargs -n 1 sh -c x` is `sh -c x`."""
+    i = 1
+    while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        i += 2 if words[i] in arg_flags else 1
+    if i < len(words) and words[i] == "--":
+        i += 1
+    return words[i:]
+
+
+def wrapper_inner(stage: str, launchers: bool = False) -> str | None:
+    """The command a `bash -c "..."` or `cmd /c "..."` stage runs, else None.
+    With `launchers`, the shell may also be started through `timeout` or
+    `gtimeout` and its duration, or `stdbuf` or `xargs` and their options."""
     words = _WORD.findall(stage.strip().lstrip("({!& \t"))
-    while words and (words[0].lower() in _PREFIX_WORDS or _ASSIGNMENT.match(words[0])):
-        words.pop(0)
+    while words:
+        name = _EXE_SUFFIX.sub("", _basename(words[0])).lower()
+        if words[0].lower() in _PREFIX_WORDS or _ASSIGNMENT.match(words[0]):
+            words = words[1:]
+        elif launchers and name in _TIMEOUTS and len(words) > 1:
+            words = _skip_timeout(words)
+        elif launchers and name in _LAUNCHER_ARG_FLAGS:
+            words = _skip_launcher(words, _LAUNCHER_ARG_FLAGS[name])
+        else:
+            break
     if len(words) < 3:
         return None
     head = _EXE_SUFFIX.sub("", _basename(words[0])).lower()

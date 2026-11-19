@@ -363,6 +363,51 @@ def _fails_in(text: str) -> bool:
     return False
 
 
+def _exits_zero(text: str) -> bool:
+    """True when `text` runs exit or return with a literal code that is 0 mod 256."""
+    for match in _EXIT_IN_TEXT.finditer(_QUOTED_TEXT.sub(" ", text)):
+        code = match.group(1)
+        if code is not None and re.fullmatch(r"-?\d+", code) and log_int(code, 1) % 256 == 0:
+            return True
+    return False
+
+
+# A trap whose handler exits 0 makes the call exit 0 whatever the check
+# returned (SEC-251): bash `trap 'exit 0' EXIT` (or 0) wherever it stands, ERR
+# or DEBUG when set before the check, and PowerShell's `trap { exit 0 }`, which
+# covers its whole scope. A computed code (`exit $rc`) may keep the status.
+_TRAP_BASH = re.compile(r"^trap\s+(?:--\s+)?('[^']*'|\"(?:[^\"\\]|\\.)*\"|[^\s'\"{]\S*)\s+(.+)$",
+                        re.IGNORECASE | re.DOTALL)
+_TRAP_PS = re.compile(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{(.*)\}\s*$", re.IGNORECASE | re.DOTALL)
+_TRAP_ANYWHERE = frozenset({"exit", "sigexit", "0"})
+_TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
+
+
+def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
+    """"anywhere" or "before" for a trap at statement `pos` whose handler exits
+    0 (see above), else None. A PowerShell block cut at `;` is joined back."""
+    text = texts[pos].strip().lstrip("({!& \t")
+    if not text[:4].lower() == "trap":
+        return None
+    block = text
+    if re.match(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{", text, re.IGNORECASE) and "}" not in text:
+        end = pos
+        while end < len(texts) - 1 and not texts[end].rstrip().endswith("}"):
+            end += 1
+        block = "; ".join([text] + [t.strip() for t in texts[pos + 1:end + 1]])
+    match = _TRAP_PS.match(block)
+    if match:
+        return "anywhere" if _exits_zero(match.group(1)) else None
+    match = _TRAP_BASH.match(text)
+    if match is None:
+        return None
+    sigs = {s.lower() for s in match.group(2).split()}
+    reach = "anywhere" if sigs & _TRAP_ANYWHERE else "before" if sigs & _TRAP_BEFORE else None
+    handler = match.group(1)
+    handler = handler[1:-1] if handler[:1] in ("'", '"') else handler
+    return reach if reach and _exits_zero(handler) else None
+
+
 def _text(statement) -> str:
     return " | ".join(s for s in statement.stages if s)
 
@@ -380,8 +425,8 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
     command that does it. kind is "masked_exit_code" for a pipeline
     whose last stage is a pager or filter, "swallowed_failure" for
     `|| <anything that does not fail again>`, for a check followed by `;`
-    or a newline and then only other commands, for `; exit 0` and for
-    --passWithNoTests. The real status counts as kept when pipefail (or,
+    or a newline and then only other commands, for `; exit 0`, for a trap
+    whose handler exits 0 and for --passWithNoTests. The real status counts as kept when pipefail (or,
     for a sequence, `set -e`) is turned on before the check, or
     PIPESTATUS, `$?` or `$LASTEXITCODE` is read after it. Read-only
     diagnostics (`grep x f | head`, `ls d || true`, `pytest --version |
@@ -407,6 +452,12 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
     norms = [normalize_stage(st.stages[0]) for st in statements]
     texts = [_text(st) for st in statements]
     checks = [_has_check(st.stages) for st in statements]
+    for pos, statement in enumerate(statements):
+        reach = _zero_exit_trap(texts, pos)
+        if reach and any(checks if reach == "anywhere" else checks[pos + 1:]):
+            found.append(("swallowed_failure", texts[pos].strip()[:60],
+                          command[statement.start:statement.end]))
+            break
     # Stages of the current &&/|| chain, so `cd x && pytest || true` counts.
     chain: list[str] = []
     chain_start = 0
@@ -479,7 +530,7 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
                           command[statement.start:statement.end]))
         for stage in stages:
             # bash -c "...", cmd /c "...": judge the inner command too.
-            inner = wrapper_inner(stage)
+            inner = wrapper_inner(stage, launchers=True)  # also timeout, stdbuf, xargs (SEC-251)
             if inner is not None and _depth < 2:
                 found.extend(masking(inner, _depth + 1))
         if stages[0].lstrip()[:1] in ("(", "{"):
