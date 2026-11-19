@@ -5,7 +5,7 @@
 Formerly agent-receipts. The old repository address redirects here. The old `receipts` command was removed in 0.4.0;
 use `donediff`.
 
-`donediff` audits AI coding agent sessions and verifies every claim the agent made against what it *actually did*. It parses the session transcript, extracts checkable claims ("tests pass", "I committed the changes", "created `cache.py`", "12 of 12 tests pass", "deployed"), and cross-checks each one against ground truth: the real exit codes of the commands the agent ran, the real edits it made, the real state of your filesystem, and, since 0.4.0, the real git state of the project (the commit exists, the named file is in the diff).
+`donediff` audits AI coding agent sessions and checks the claims it can read against what the agent *actually did*. It parses the session transcript, extracts checkable claims ("tests pass", "I committed the changes", "created `cache.py`", "12 of 12 tests pass", "deployed"), and cross-checks each one against ground truth: the real exit codes of the commands the agent ran, the real edits it made, the real state of your filesystem, and, since 0.4.0, the real git state of the project (the commit exists, the named file is in the diff).
 
 Since v0.2 that includes the work the agent delegated: the transcripts of its sub-agents and workflow agents are read too, and every piece of evidence names where it ran.
 
@@ -114,7 +114,7 @@ The details (layout, ordering rules, relayed claims, performance numbers) are in
 
 ## How verification works
 
-Every claim gets one of four verdicts, decided by evidence in this order: the transcript's own tool-call results (exit codes, output), then your filesystem and the project's git state.
+Every claim it reads gets one of four verdicts, decided by evidence in this order: the transcript's own tool-call results (exit codes, output), then your filesystem and the project's git state.
 
 | Verdict | Meaning |
 |---|---|
