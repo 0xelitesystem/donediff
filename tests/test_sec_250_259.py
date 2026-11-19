@@ -281,3 +281,48 @@ def test_sec253_output_that_says_no_test_ran_is_unverified(tmp_path, command, ou
 def test_sec253_runs_that_ran_tests_still_verify(tmp_path, command, output):
     (finding,) = audit(_one_run(tmp_path, command, output)).findings
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- SEC-231: a Claude Code event keeps only the tool input the engine reads ----
+
+def _padded_calls(tmp_path, n=4):
+    """n Bash calls whose input holds ~0.9 MiB of empty objects next to the
+    command: under the 1 MiB value-count threshold, so every line is read."""
+    pad = "[" + "{}," * 300_000 + "{}]"
+    path = tmp_path / "pad.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(n):
+            line = json.dumps(assistant_tool(f"t{i}", "Bash", {"command": "pytest -q"}))
+            fh.write(line.replace('"command": "pytest -q"', '"command": "pytest -q", "pad": ' + pad) + "\n")
+            fh.write(json.dumps(tool_result(f"t{i}", "3 passed")) + "\n")
+        fh.write(json.dumps(assistant_text("All tests pass.")) + "\n")
+    return path
+
+
+def test_sec231_padding_in_a_tool_input_is_not_kept(tmp_path):
+    import gc
+    import tracemalloc
+    path = _padded_calls(tmp_path)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        session = parser.parse_transcript(path)
+        gc.collect()
+        kept = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    calls = [e for e in session.events if e.tool_input]
+    assert len(calls) == 4 and all(e.tool_input == {"command": "pytest -q"} for e in calls)
+    assert kept < 2 * path.stat().st_size, kept  # was ~25x
+
+
+def test_sec231_kept_input_holds_what_the_engine_reads():
+    raw = {"command": "pytest", "file_path": "a.py", "content": "x", "old_string": "a",
+           "new_string": "b", "description": "d" * 50, "timeout": 5,
+           "edits": [{"old_string": "1", "new_string": "2", "replace_all": True}, {}, "x",
+                     {"old_string": "", "new_string": ""}, {"new_string": 3}]}
+    assert parser.kept_input(raw) == {
+        "command": "pytest", "file_path": "a.py", "content": "x", "old_string": "a",
+        "new_string": "b", "edits": [{"old_string": "1", "new_string": "2"}, {"new_string": "3"}]}
+    assert parser.kept_input(None) == {} and parser.kept_input(["command"]) == {}
+    assert parser.kept_input({"command": 7}) == {"command": "7"}

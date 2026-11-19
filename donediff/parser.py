@@ -100,6 +100,31 @@ def loads(text):
         raise ValueError("JSON nested too deep") from exc
 
 
+# The tool input keys the engine reads: Event.command and Event.file_path,
+# the edit pairs and the written content gaming.py checks. A Claude Code
+# event keeps only these, as text, so padding elsewhere in a tool input is
+# not held for the whole audit (SEC-231: 25x the file size in memory).
+_INPUT_KEYS = ("command", "file_path", "content", "old_string", "new_string")
+_EDIT_KEYS = ("old_string", "new_string")
+
+
+def kept_input(tool_input) -> dict:
+    """The part of a tool_use input the engine reads (SEC-231)."""
+    if not isinstance(tool_input, dict):
+        return {}
+    kept = {key: _text(tool_input[key]) for key in _INPUT_KEYS if key in tool_input}
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        kept["edits"] = [{key: _text(edit[key]) for key in _EDIT_KEYS if key in edit}
+                         for edit in edits
+                         if isinstance(edit, dict) and any(edit.get(key) for key in _EDIT_KEYS)]
+    return kept
+
+
+def _text(value) -> str:
+    return value if isinstance(value, str) else str(value)
+
+
 _EXIT_CODE_RE = re.compile(r"[Ee]xit code:? (\d+)")
 _TS_RE = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?"
@@ -354,7 +379,6 @@ def parse_transcript(path: str | Path) -> Session:
                         ))
                         index += 1
                     elif btype == "tool_use":
-                        tool_input = block.get("input")
                         event = Event(
                             kind=EventKind.TOOL_CALL,
                             index=index,
@@ -362,7 +386,7 @@ def parse_transcript(path: str | Path) -> Session:
                             is_sidechain=sidechain,
                             tool_name=str(block.get("name", "")),
                             tool_id=str(block.get("id", "")),
-                            tool_input=tool_input if isinstance(tool_input, dict) else {},
+                            tool_input=kept_input(block.get("input")),
                             t=clock,
                             cwd=str(record.get("cwd", "") or ""),
                             result_seen=False,
