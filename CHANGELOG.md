@@ -167,7 +167,9 @@ donediff now reads more coding agents than Claude Code.
   (16 MiB per row, 500,000 rows and 128 MiB per session).
 - SEC-231: in the Claude Code reader a transcript line over 32 MiB is read
   past in pieces and counted as unrecognised; a transcript over 512 MiB is
-  refused, and a sub-agent transcript over it is counted and not read.
+  refused, and a sub-agent transcript over it is counted and not read. A
+  tool call keeps only the input fields donediff reads, so padding in a
+  tool input is not held for the whole audit.
 - SEC-232: in a background command's completion notice any non-zero exit
   code wins, and a failed notice never reads as exit 0.
 - SEC-233: writes in a shell command are read stage by stage with quoted
@@ -222,8 +224,32 @@ donediff now reads more coding agents than Claude Code.
   as bash reads it: up to 19 digits, a code that is 0 mod 256 inside the
   64-bit range exits 0 (`exit 1152921504606846976`), and a number outside
   that range is a failure.
+- SEC-253: more forms that run no test are not checks (`vitest list`,
+  `cargo nextest list`, `go test -c`, `--exclude-task test`,
+  `--if-present`), and output saying no test ran is no proof (Maven
+  `Tests run: 0,` on every count line, dotnet `No test matches the given
+  testcase filter`, pytest with every test deselected).
+- SEC-254: secret masking of JWT-like tokens runs in linear time; a long
+  run of the token prefix had taken seconds to minutes.
+- SEC-255: claims are also read with the remaining default-ignorable
+  characters dropped (combining grapheme joiner, Khmer inherent vowels,
+  variation selectors) and eight more look-alike letters folded; reports
+  escape the same characters. A variation selector after an emoji is not
+  flagged.
+- SEC-256: a commit id counts only when the commit git finds for it starts
+  with the claimed digits, so a tag or branch named like an id does not
+  make a made-up id VERIFIED.
 - SEC-258: the value count that guards JSON parsing (SEC-241) runs in linear
   time; one log line cut mid-write had taken minutes.
+- SEC-259: the JSON report shows home folders as `~` in `evidence_source`
+  and in each gaming signal's `source` too, unless `--full-paths`.
+- SEC-284: a check inside a `&&` chain followed by another command
+  (`pytest && echo ok; true`, `pytest && echo ok & true`) is a masked exit
+  code: the call's status is the last command's, so the claim is
+  UNVERIFIED.
+- SEC-285: mocha's `N failing` and a `FAIL` line from go test or jest count
+  as failure text, so a pass marker in the same output no longer verifies
+  a run whose exit code was hidden.
 
 ### Security
 
