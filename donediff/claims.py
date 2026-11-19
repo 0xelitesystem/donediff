@@ -28,6 +28,13 @@ _DISQUALIFIERS = re.compile(
 _PATH = (r"(?:`([^`\s]+)`"
          r"|((?:[A-Za-z]:)?[\w.\\/-]*[\w-]\.[A-Za-z0-9]{1,10})(?![\w\\/]))")
 
+# A file named as a markdown link, the way Codex CLI names files it touched:
+# [hello.py](C:/work/hello.py). Read only by the file-created and file-edited
+# phrasings, and only when the link text and the target name the same file
+# and the target is a local path, not a URL (see _link_file).
+_MD_FILE_LINK = r"\[`?([^\]\s`]+\.[A-Za-z0-9]{1,10})`?\]\(([^)\s]+)\)"
+_URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:(?![\\/])|[A-Za-z][A-Za-z0-9+.-]+:[\\/]{2}")
+
 # The claim-word table: every phrasing donediff reads as a claim, in one
 # place, tried in order. Each phrasing here has a test in test_claims.py.
 # The groups capture the claim's detail (see _detail).
@@ -63,12 +70,12 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     )),
     (ClaimType.FILE_CREATED, re.compile(
         r"\bcreated\s+(?:the\s+(?:file\s+)?|a\s+(?:new\s+)?(?:file\s+)?|file\s+)?"
-        r"`([^`\s]+\.[A-Za-z0-9]{1,10})`",
+        r"(?:`([^`\s]+\.[A-Za-z0-9]{1,10})`|" + _MD_FILE_LINK + r")",
         re.IGNORECASE,
     )),
     (ClaimType.FILE_EDITED, re.compile(
         r"\b(?:edited|updated|modified)\s+(?:the\s+(?:file\s+)?|file\s+)?"
-        r"`([^`\s]+\.[A-Za-z0-9]{1,10})`",
+        r"(?:`([^`\s]+\.[A-Za-z0-9]{1,10})`|" + _MD_FILE_LINK + r")",
         re.IGNORECASE,
     )),
     (ClaimType.PATH_WRITTEN, re.compile(
@@ -112,11 +119,12 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 # Markdown noise we strip before matching: emphasis markers (an underscore
 # only at the edge of a word, so my_module.py keeps its own), headings and
-# quotes at a line start, checkmarks, bullets. Code spans are kept verbatim:
-# file names hold underscores and asterisks (SEC-239).
+# quotes at a line start, checkmarks, bullets. Code spans and markdown links
+# are kept verbatim: file names and paths hold underscores and asterisks
+# (SEC-239), and a stripped "/_build/" would name a file that does not exist.
 _MD_NOISE = re.compile(r"\*+|(?<!\w)_+|_+(?!\w)|^[ \t]*(?:#{1,6}|>+)[ \t]*|^\s*[-•✅✓✔☑]+\s*",
                        re.MULTILINE)
-_CODE_SPAN = re.compile(r"`[^`\n]*`")
+_CODE_SPAN = re.compile(r"`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\)")
 
 
 def _sentences(text: str) -> list[str]:
@@ -201,7 +209,25 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
     if claim_type is ClaimType.COMMIT_ID:
         # A digit sets an id apart from a hex-letter word ("defaced").
         return groups[0].lower() if any(c.isdigit() for c in groups[0]) else None
+    if claim_type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED) and match.group(1) is None:
+        return _link_file(match.group(2), match.group(3))
     return groups[0] if groups else ""
+
+
+def _base(path: str) -> str:
+    return re.split(r"[\\/]", path)[-1]
+
+
+def _link_file(text: str, target: str) -> str | None:
+    """The local file a markdown link names, or None when it names none.
+
+    The target must be a path (no URL scheme; a drive letter is a path) whose
+    file name is the link text's: [a.py](b.py) or [a.py](a.py#L3) is not read
+    as a claim, because which file it means would be a guess.
+    """
+    if _URL_SCHEME.match(target) or _base(target) != _base(text):
+        return None
+    return target
 
 
 def _sentence_claims(sentence: str, index: int) -> list[Claim]:
