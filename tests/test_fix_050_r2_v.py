@@ -163,3 +163,31 @@ def test_sec251_leftover_trap_forms_swallow_the_failure(tmp_path, command):
 ])
 def test_sec251_leftover_traps_that_keep_the_status_are_no_mask(command):
     assert _kinds(command) == []
+
+
+# -- SEC-250 leftover: a marker printed by another statement before the pipe ----
+
+@pytest.mark.parametrize("command", [
+    "echo '5 passed'; " + _QUIET + " | tail -1",
+    "echo '5 passed' && " + _QUIET + " | tail -1",
+    "echo '5 passed' & " + _QUIET + " | tail -1",
+    "printf '5 passed\\n'; python -m pytest -q 2>&1 | tail -1",
+])
+def test_sec250_leftover_a_marker_from_another_statement_is_no_proof(tmp_path, command):
+    finding, signals = _verdict(tmp_path, command, "5 passed")
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "in the same call, so a pass marker in the output is no proof" in finding.evidence
+    assert "masked_exit_code" in signals
+
+
+@pytest.mark.parametrize("command", [
+    "cd app && python -m pytest -q 2>&1 | tail -3",
+    "export CI=1; python -m pytest -q 2>&1 | tail -3",
+    "CI=1; python -m pytest -q 2>&1 | tail -3",
+    "source .venv/bin/activate && python -m pytest -q 2>&1 | tail -3",
+    "bash -c \"python -m pytest -q | tail -3\"",
+    "python -m pytest -q 2>&1 | tee log.txt | tail -3",
+])
+def test_sec250_leftover_silent_statements_still_let_a_marker_verify(tmp_path, command):
+    finding, _ = _verdict(tmp_path, command, "12 passed in 0.2s")
+    assert finding.verdict is Verdict.VERIFIED

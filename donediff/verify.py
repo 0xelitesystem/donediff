@@ -96,6 +96,9 @@ _VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
 # Flags that let the check itself pass with nothing run or found: its own
 # output still tells, so a pass marker may lift them.
 _FLAG_MASKS = frozenset({"--passWithNoTests", "--exit-zero"})
+# Statements that print nothing of their own, so a marker cannot come from them (SEC-250).
+_SILENT = frozenset({"cd", "pushd", "popd", "set", "export", "unset", "source", ".",
+                     "set-location", "sl"})
 
 
 def _filter_after_check(pipeline: str) -> str | None:
@@ -113,13 +116,27 @@ def _filter_after_check(pipeline: str) -> str | None:
     return None
 
 
-def _marker_blocker(how: str, snippet: str) -> str | None:
-    """What stops a pass marker in the output from lifting this mask, or None."""
+def _marker_blocker(how: str, snippet: str, command: str = "") -> str | None:
+    """What stops a pass marker in the output from lifting this mask, or None.
+    For a pipe mask, another statement of the call that prints (`echo '5 passed';
+    pytest | tail -1`) could be where the marker came from (SEC-250 leftover)."""
     if how in _FLAG_MASKS:
         return None
     if how.startswith("| "):
         name = _filter_after_check(snippet)
-        return None if name is None else f"a pipe through `{name}`"
+        if name is not None:
+            return f"a pipe through `{name}`"
+        at = command.find(snippet)
+        for st in split_statements(command):
+            stages = [s for s in st.stages if s]
+            if not stages or (at >= 0 and (at <= st.start < at + len(snippet)
+                                           or st.start <= at < st.end)):
+                continue  # the masked pipe itself, or the wrapper (`bash -c "..."`) that holds it
+            prog = program(stages[0])
+            if prog and prog not in _SILENT and not re.fullmatch(r"[A-Za-z_]\w*=\S*",
+                                                                 stages[0].strip()):
+                return f"`{prog}` in the same call"
+        return None
     return f"`{how}`"
 
 
@@ -130,7 +147,7 @@ def _inconclusive(event: Event) -> str | None:
     if not found:
         return None
     if event.pass_hint:
-        blockers = [_marker_blocker(how, snippet) for _, how, snippet in found]
+        blockers = [_marker_blocker(how, snippet, event.command) for _, how, snippet in found]
         blocker = next((b for b in blockers if b is not None), None)
         if blocker is None:
             return None
