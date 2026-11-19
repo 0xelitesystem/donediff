@@ -52,7 +52,13 @@ donediff audit examples/demo-session.jsonl --no-disk-check
 ## Install
 
 ```bash
-pip install git+https://github.com/0xelitesystem/donediff
+pipx install donediff
+```
+
+No pipx? Try plain pip:
+
+```bash
+pip install donediff
 ```
 
 Python 3.10 or newer. No dependencies.
@@ -62,6 +68,11 @@ Python 3.10 or newer. No dependencies.
 ```bash
 # Audit your most recent Claude Code session
 donediff audit latest
+
+# Audit the newest Codex CLI, Cline or Goose session
+donediff audit latest --agent codex
+donediff audit latest --agent cline
+donediff audit latest --agent goose
 
 # Audit a specific session by id prefix, or any transcript path
 donediff audit 8dcbd9b2
@@ -118,7 +129,7 @@ Every claim gets one of four verdicts, decided by evidence in this order: the tr
 | "build is clean" | A build command ran and succeeded |
 | "lint/typecheck passes" | eslint/ruff/mypy/tsc/pyright ran and succeeded |
 | "12 of 12 tests pass", "12/12 tests" | A passing test run whose output shows 12 passed; a different count is CONTRADICTED |
-| "created / edited / updated `file.py`" | A Write/Edit call for that file exists in the transcript, and the file is on disk. With git: the file is in a commit made during the session or in the working-tree changes, or it is CONTRADICTED ("names a file the diff does not touch") |
+| "created / edited / updated `file.py`", or the file as a Markdown link (`[file.py](src/file.py)`) | A Write/Edit call for that file exists in the transcript, and the file is on disk. With git: the file is in a commit made during the session or in the working-tree changes, or it is CONTRADICTED ("names a file the diff does not touch"). A Markdown link counts when its target is a local path that ends in the link text's file name; that target is the path checked. |
 | "committed" | The git command actually ran and didn't error. With git: a commit made during the session exists, and when the transcript's `git commit -m` message is known, one has that subject; none found is CONTRADICTED |
 | "pushed" | The git command actually ran and didn't error. With git: the session's newest commit is on a remote-tracking branch (local refs only, never fetched) |
 | "committed as `a1b2c3d`" (a commit id) | With git: `git cat-file` finds the commit, or it is CONTRADICTED. Without git: a commit command in the transcript printed that id |
@@ -141,6 +152,8 @@ Disk checks run inside the folder the transcript names as its working directory.
 
 Transcript paths that point at a network share or device (`\\host\share`, `//host/share`) are never opened, so the disk check for those claims is reported as not checked. Reports mask common credential shapes (tokens, keys, passwords, authorization headers), but masking is pattern based: review a report before you share it.
 
+JSON and Markdown reports show your home folder as `~` in paths and quoted commands. Other text, such as a folder name or a name inside a command, stays as written: read a report before you share it. Add `--full-paths` to keep the full paths. The terminal report shows full paths.
+
 ### Gaming signals
 
 Independent of claims, the auditor scans for changes that make checks pass by weakening them:
@@ -148,7 +161,7 @@ Independent of claims, the auditor scans for changes that make checks pass by we
 - **Weakened assertions**, an edit to a test file that removes more assertions than it adds
 - **Added skips**, `@pytest.mark.skip`, `it.skip`, `#[ignore]`, `t.Skip()` added to an existing test
 - **Swallowed failures**, `npm test || true`, `pytest; exit 0`, `--passWithNoTests` (only on a test, build, lint or type check; `ls dir || true` is not flagged)
-- **Masked exit codes**, a check piped into a pager or filter (`pytest | tail`, `npm test | grep`, `| Select-Object`), or followed by other commands (`pytest; git status`), so the call reports another command's exit code; not raised when the real status is kept (`set -o pipefail` before it, `${PIPESTATUS[0]}`, `$?` or `exit $LASTEXITCODE` after it). Such a run backs a claim only when its output shows a pass marker (`5 passed`, `# fail 0`, `test result: ok`); otherwise the claim is UNVERIFIED. Version probes, listings and dry runs (`pytest --version`, `--collect-only`, `make -n`) are neither evidence nor flagged.
+- **Masked exit codes**, a check piped into a pager or filter (`pytest | tail`, `npm test | grep`, `| Select-Object`), or followed by other commands (`pytest; git status`), so the call reports another command's exit code; not raised when the real status is kept (`set -o pipefail` before it, `${PIPESTATUS[0]}`, `$?` or `exit $LASTEXITCODE` after it). A pipe into a pager or a filter that passes lines unchanged (`| tail`, `| head`, `| tee`) backs a claim only when its output shows a pass marker (`5 passed`, `# fail 0`, `test result: ok`); a check followed by other commands, `||`, `&` or `!` never does, since another command can print the marker. Otherwise the claim is UNVERIFIED. Version probes, listings and dry runs (`pytest --version`, `--collect-only`, `make -n`) are neither evidence nor flagged.
 - **Bypassed hooks**, `git commit --no-verify`
 - **Deleted/emptied test files**
 
@@ -169,9 +182,16 @@ A session with no checkable claims has no score ("n/a"). With `--fail-under`, th
 
 ## Supported agents
 
-- **Claude Code**, reads the JSONL transcripts in `~/.claude/projects/` directly. No setup.
+- **Claude Code**, reads the JSONL transcripts in `~/.claude/projects/` directly. No setup. `--agent auto` (the default) reads Claude Code first.
+- **Codex CLI** (`--agent codex`), reads rollout files under `$CODEX_HOME` or `~/.codex/sessions`.
+- **Cline** (`--agent cline`), reads session files under `~/.cline/data/sessions`.
+- **Goose** (`--agent goose`), reads its `sessions.db`, schema version 18 only.
 
-The parser is isolated in [`donediff/parser.py`](donediff/parser.py); adapters for other agents that persist transcripts (Codex CLI, OpenCode, Gemini CLI) are the roadmap's top item. PRs welcome.
+The Codex CLI, Cline and Goose readers are built from those agents' published code and file formats and tested on sample sessions in that shape. The Codex CLI and Goose readers have also been checked on real sessions from those agents, and the Cline reader on a sample session published in the Cline project.
+
+Claude Code, Codex CLI, Cline and Goose are names of their owners' projects; donediff is not affiliated with or endorsed by them.
+
+The readers live in [`donediff/readers/`](donediff/readers/). PRs welcome.
 
 ## Honest limitations
 
@@ -181,8 +201,9 @@ The parser is isolated in [`donediff/parser.py`](donediff/parser.py); adapters f
 - Which run backs a claim is chosen by claim type and time, not by project: in a session that works on several repositories, a test run in one can back or contradict a claim about another. Relayed claims are narrowed to the agents whose results came back in that turn; other claims see every agent that had finished. Staleness is scoped: only edits inside the folder the check ran in make it stale.
 - An agent counts as finished when its transcript has no later record, so an idle background agent looks finished. A test run meant to fail (mutation testing) looks like a failure.
 - A shell command sent to the background counts only from its completion notice, which has an exit code but no output; a result read later with BashOutput or TaskOutput is not used.
-- When a pipe or a later command hid a check's exit code, the claim needs a pass marker from a fixed list (`N passed`, `# fail 0`, `test result: ok`, `OK`, `ok pkg`, `Found 0 errors` and similar). A runner that prints none of them leaves the claim UNVERIFIED.
+- When a pipe hid a check's exit code, the claim needs a pass marker from a fixed list (`N passed`, `# fail 0`, `test result: ok`, `OK`, `ok pkg`, `Found 0 errors` and similar) and every stage after the check must pass lines unchanged; when a later command, `||`, `&` or `!` hid it, no marker counts. A runner that prints none of them leaves the claim UNVERIFIED.
 - The shell reader is a small scanner, not a shell: tests run inside a script (`bash ci.sh`), an alias or `eval` are not seen.
+- The Claude Code reader reads the session file in order; it does not follow conversation branches.
 - Git is read only with the disk check on, and only the state it is in now, not at the moment of the claim. A "session commit" is one whose committer time falls inside the session's time window (with two minutes either side), on a local branch or HEAD.
 - "Pushed" is judged from local remote-tracking refs only; donediff never fetches. A push by URL, or to a remote with no fetch refspec, does not update those refs, and a repository with none is reported as not checked.
 - A file git ignores, or one outside the project directory, is not judged by git. A file named only by its name ("created `cache.py`") matches any path in the project with that name.
@@ -200,7 +221,6 @@ Five zero-dependency tools that audit a finished agent session from five angles:
 
 ## Roadmap
 
-- [ ] Adapters: Codex CLI, OpenCode, Gemini CLI session formats
 - [ ] `donediff watch`, live-tail the active session, flag claims as they happen
 - [ ] Claude Code Stop-hook integration: auto-audit every session on completion
 - [ ] Optional LLM-assisted claim extraction (`--llm`) for non-template phrasing

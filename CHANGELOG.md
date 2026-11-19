@@ -14,19 +14,14 @@ donediff now reads more coding agents than Claude Code.
     The script is read as text and never run; only plain
     `tools.<name>(...)` calls are taken, and any other use is counted as an
     unrecognised record.
-  - opencode: its SQLite database (`$OPENCODE_DB`, or `opencode/opencode.db`
-    under `$XDG_DATA_HOME` or `~/.local/share`), both table layouts.
-  - Gemini CLI: chat files under `~/.gemini/tmp`, replayed following Gemini
-    CLI's own loading rules (rewinds and patches included), and the older
-    one-file `.json` sessions.
-  - Qwen Code: chat files under `~/.qwen/projects` (and the older
-    `tmp/<id>/chats`), following the active history by Qwen Code's own
-    resume rules.
   - Cline: session files under `~/.cline/data/sessions`.
   - Goose: its `sessions.db`, schema version 18 only.
-  - A reader listed here is built from that agent's published code and file
-    formats and tested on sample sessions in that shape. It is not a
-    statement that donediff has been tested on real runs of that agent.
+  - Each reader is built from that agent's published code and file formats
+    and tested on sample sessions in that shape. The Codex CLI and Goose
+    readers have also been checked on real sessions from those agents, and
+    the Cline reader on a sample session published in the Cline project.
+  - `--agent` also lists readers for other formats; they are not described
+    here.
 - An exit code is taken only from the field where each agent records one.
   Where an agent logs a status and no exit code, the finding says "the log
   has a status only" and never "exit code".
@@ -104,21 +99,26 @@ donediff now reads more coding agents than Claude Code.
   transcript says so.
 - `--main-only` is reported only when it was passed.
 - `--limit` and `--fail-under` values out of range are refused.
-- SEC-203: a relative `$OPENCODE_DB` joined onto a network `$XDG_DATA_HOME`
-  is refused; the final path is checked, not only its parts.
-- SEC-204: opening an opencode database in WAL mode no longer creates files
+- A file named without backticks (`hello.py`, `src/app.py`) and passive
+  phrasings ("hello.py was created", "`hello.py` was executed", "`python
+  hello.py` ran without errors") are read as file-created and command
+  claims; a web domain (example.com) is not a file.
+- SEC-203: a relative database path from an environment variable, joined
+  onto a network `$XDG_DATA_HOME`, is refused; the final path is checked,
+  not only its parts.
+- SEC-204: opening a session database in WAL mode no longer creates files
   beside it.
 - SEC-207: a log line holding deeply nested JSON no longer crashes the
   audit; it is counted as unreadable.
 - SEC-208: a write or edit that failed, or that has no recorded result, no
   longer backs a "created" or "report at" claim. It still makes an earlier
   check stale.
-- SEC-209: a Qwen Code run that did not pass never reads as passing, even
-  when the command printed its own exit line.
-- SEC-210: a Qwen Code rewind no longer hides a later edit or failure; a
-  rewound run or write is never evidence.
-- SEC-211: Qwen Code exit codes are no longer read from text for a cancelled
-  run.
+- SEC-209: in one reader, a run logged as failed no longer reads as passing
+  because the command printed its own exit line.
+- SEC-210: in one reader, a rewind no longer hides a later edit or failure;
+  a rewound run or write is never evidence.
+- SEC-211: in one reader, exit codes are no longer read from text for a
+  cancelled run.
 - SEC-212: a Cline edit or patch with no recorded outcome is unknown, not a
   success.
 - SEC-213: a command inside a Codex code-mode script has an unknown outcome,
@@ -127,19 +127,19 @@ donediff now reads more coding agents than Claude Code.
   not a success.
 - SEC-215: when Goose rewrites a whole conversation, no pass logged before
   the rewrite is proof.
-- SEC-216: a relative or drive-relative `APPDATA` or `XDG_DATA_HOME` is
-  ignored by the Goose and opencode readers, as if unset, and a data folder
-  that is still not absolute (a relative home) is refused, so neither reads
-  from the working folder.
+- SEC-216: the database readers ignore a relative or drive-relative
+  `APPDATA` or `XDG_DATA_HOME`, as if unset, and refuse a data folder that
+  is still not absolute (a relative home), so they never read from the
+  working folder.
 - SEC-217: Goose metadata over a size cap is skipped and counted, and one
   session's read is bounded; no pass logged past the bound is proof.
-- SEC-218: a Goose or opencode database with both side files (`-wal` and
-  `-shm`) is read from a private temporary copy, so nothing beside the
-  original is ever written.
+- SEC-218: a session database with both side files (`-wal` and `-shm`) is
+  read from a private temporary copy, so nothing beside the original is
+  ever written.
 - SEC-219: a Goose tool name with no extension prefix is not taken as the
   developer extension's shell, write or edit.
-- SEC-218 follow-up: the Goose and opencode readers choose how to open a
-  database from the side files present: a `-wal` with a `-shm` is read from
+- SEC-218 follow-up: the database readers choose how to open a database
+  from the side files present: a `-wal` with a `-shm` is read from
   a private copy and a lone `-wal` is refused, whatever the database header
   says.
 - SEC-220 follow-up: home folders seen from WSL, MSYS and Cygwin
@@ -162,9 +162,9 @@ donediff now reads more coding agents than Claude Code.
   reads it (SEC-252).
 - SEC-229: the Claude Code reader replaces invalid UTF-8 instead of stopping
   with a traceback; the bad line is counted as unreadable.
-- SEC-230: Goose and opencode refuse a session table that is virtual or has
-  a generated column; size caps count bytes; opencode has Goose's caps
-  (16 MiB per row, 500,000 rows and 128 MiB per session).
+- SEC-230: the database readers refuse a session table that is virtual or
+  has a generated column; size caps count bytes, and every database reader
+  has the same caps (16 MiB per row, 500,000 rows and 128 MiB per session).
 - SEC-231: in the Claude Code reader a transcript line over 32 MiB is read
   past in pieces and counted as unrecognised; a transcript over 512 MiB is
   refused, and a sub-agent transcript over it is counted and not read. A
@@ -254,10 +254,9 @@ donediff now reads more coding agents than Claude Code.
 ### Security
 
 - Every new reader opens agent logs read-only, starts no other program and
-  makes no network call. Network and device paths are refused. The Codex,
-  Gemini CLI, Qwen Code and Cline readers do not follow symlinks or Windows
-  junctions in the agents' folders, and the opencode and Goose readers do not
-  open a linked database or a database in a linked folder.
+  makes no network call. Network and device paths are refused. No new file
+  reader follows a symlink or Windows junction in an agent's folder, and no
+  database reader opens a linked database or a database in a linked folder.
 - SEC-224, SEC-225, SEC-226, SEC-227 and SEC-248, listed under 0.4.2, are
   also fixed in 0.5.0's code: git is started only from an absolute PATH entry
   that is not the current folder and does not lie inside the project or its
