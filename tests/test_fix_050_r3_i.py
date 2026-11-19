@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import importlib.util
+import time
 import tracemalloc
 from pathlib import Path
 
@@ -325,3 +326,47 @@ def test_new2_i2_an_unmodelled_tool_keeps_no_edit_list(tmp_path, reader):
         chosen = QWEN
     (event,) = chosen.parse(path).tool_calls()
     assert event.tool_input == {"file_path": "notes.md"}  # the edits list is never read
+
+
+# -- NEW2-I-3: a token whose first part holds a "-", glued to a dash, is masked --
+
+def _dash_token(first="a" * 6 + "-" + "a" * 7):
+    """Three dot-joined parts, the first holding a "-": made up, not a real token."""
+    start = "e" + "yJ"
+    return start + first + "." + start + "b" * 14 + "." + "c" * 20
+
+
+@pytest.mark.parametrize("before", ["saved jwt-", "-", "cli --jwt-", "a-b-", "--", "X-Auth-",
+                                    "wrote cache-"])
+def test_new2_i3_a_dash_glued_token_with_a_dash_in_part_one_is_masked(before):
+    from donediff.redact import redact_secrets
+    token = _dash_token()
+    shown = redact_secrets(before + token + " end")
+    assert token not in shown and "a" * 7 + "." not in shown, shown.replace(token, "<token>")
+    assert shown.startswith(before) and shown.endswith(" end")
+
+
+@pytest.mark.parametrize("first", ["a" * 14, "a" * 6 + "_" + "a" * 7, "-" + "a" * 13,
+                                   "a" * 12 + "-a"])
+def test_new2_i3_other_first_parts_glued_to_a_dash_are_masked(first):
+    from donediff.redact import redact_secrets
+    token = _dash_token(first)
+    assert token not in redact_secrets("saved jwt-" + token)
+
+
+def test_new2_i3_a_dashed_name_that_is_no_token_stays():
+    from donediff.redact import redact_secrets
+    for text in ("the my-eyJunk-file.eyJson.txt name", "branch fix-eyJ-parse.eyJ.x",
+                 "a-b-c-d-e-f-g-h-i-j-k-l.m-n-o-p-q-r-s-t.u-v-w-x-y-z"):
+        assert redact_secrets(text) == text
+
+
+@pytest.mark.parametrize("unit", ["-e" + "yJ-", "-e" + "yJ" + "a" * 6 + "-" + "a" * 7 + ".",
+                                  "-e" + "yJ" + "a-" * 6 + ".e" + "yJ" + "b" * 8 + ".-",
+                                  "a" * 11 + "-"])
+def test_new2_i3_mask_stays_linear_on_dash_runs(unit):
+    from donediff.redact import redact_secrets
+    text = unit * (1024 * 1024 // len(unit))
+    started = time.perf_counter()
+    redact_secrets(text)
+    assert time.perf_counter() - started < 2.0

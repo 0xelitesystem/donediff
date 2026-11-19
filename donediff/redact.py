@@ -108,6 +108,11 @@ _TOKEN_PREFIX_STRICT = re.compile(r"\b(npm_|hf_)[A-Za-z0-9]{30,}\b")
 # start stops at the next "-" and the search stays linear.
 _JWT = re.compile(r"(?:(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}|(?<=-)eyJ[A-Za-z0-9_]{8,})"
                   r"\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+# A token glued to a "-" whose first part holds a "-" too (NEW2-I-3: a
+# header's base64url often does). One start per run of token characters, so
+# the search stays linear; the token is taken from the run's first "-eyJ".
+_JWT_GLUED = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}"
+                        r"\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # A PEM private key: the body between its BEGIN and END lines (or the end).
 _PEM = re.compile(r"(-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----)[\s\S]*?"
                   r"(-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|\Z)")
@@ -293,11 +298,23 @@ def _mask_token(match: re.Match) -> str:
     return match.group(1) + _MASK
 
 
+def _mask_glued_jwt(match: re.Match) -> str:
+    """Mask from the first "-eyJ" of the first part, when 8 or more token
+    characters follow it; a later one would be shorter."""
+    text = match.group()
+    head = text[:text.index(".")]
+    start = head.find("-eyJ") + 1
+    if start == 0 or len(head) - start < 11:
+        return text
+    return text[:start] + "eyJ" + _MASK
+
+
 def redact_secrets(text: str) -> str:
     """Replace credential values in `text` with ***; leave the rest as is."""
     text = _PEM.sub(r"\1" + _MASK + r"\2", text)
     text = _SLACK_HOOK.sub(r"\1" + _MASK, text)
     text = _JWT.sub("eyJ" + _MASK, text)
+    text = _JWT_GLUED.sub(_mask_glued_jwt, text)
     text = _URL_CREDENTIALS.sub(r"\1" + _MASK + "@", text)
     text = _AUTH_HEADER.sub(_mask_header, text)
     text = _redact_assignments(text)
