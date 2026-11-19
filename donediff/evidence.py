@@ -529,17 +529,26 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
                                " ".join(_text(st) for st in tail))
                 found.append(("swallowed_failure", how[:60],
                               command[chain_start:statement.end]))
-        if checks[pos] and statement.op == "&" and not read_after and not any(
-                _WAIT_FOR_JOB.match(n) for n in norms[pos + 1:]):
+        # A failing check skips the rest of its && chain, so the chain's own
+        # end decides (SEC-284): in `pytest && echo ok; true` the status
+        # comes from `true`, in `pytest && echo ok & true` from `true` too.
+        end = pos
+        if checks[pos] and not read_after:
+            while end < len(statements) - 1 and statements[end].op == "&&":
+                end += 1
+        if checks[pos] and statements[end].op == "&" and not read_after and not any(
+                _WAIT_FOR_JOB.match(n) for n in norms[end + 1:]):
             # A check sent to the background (`pytest & wait`), or cmd's
             # `a & b`: the call's status is whatever runs after it.
-            nxt = next((program(st.stages[0]) for st in statements[pos + 1:]
+            nxt = next((program(st.stages[0]) for st in statements[end + 1:]
                         if st.stages and st.stages[0]), "")
             found.append(("masked_exit_code", "& " + (nxt or "(background)"),
                           command[statement.start:]))
-        elif (checks[pos] and statement.op in (";", "\n") and not errexit
-                and not read_after):
-            later = [i for i in range(pos + 1, len(statements))
+        elif (checks[pos] and statements[end].op in (";", "\n") and not read_after
+                and not (errexit and end == pos)):
+            # set -e does not stop on a command inside a && chain other than
+            # its last one, so it keeps the status only for the chain's end.
+            later = [i for i in range(end + 1, len(statements))
                      if _sets_status(statements[i])]
             if later and not any(checks[i] for i in later):
                 # The call's status is the last command's, not the check's.

@@ -329,3 +329,60 @@ def test_text_and_groups_that_do_not_swallow_a_check(command):
 def test_pass_with_no_tests_on_a_real_run_is_still_flagged():
     assert "swallowed_failure" in _kinds("cd app && npx jest --passWithNoTests")
     assert "swallowed_failure" in _kinds("(pytest -q) || true")
+
+
+# -- SEC-284: a check inside a && chain, then a later command ------------------
+# (Security's tests, 2026-11-19 report s.4, plus the brief's & form.)
+
+@pytest.mark.parametrize("command, how", [
+    ("pytest && echo ok; true", "; true"),
+    ("pytest -q >/dev/null 2>&1 && echo ok\ntrue", "; true"),
+    ("cd app && pytest && echo ok; true", "; true"),
+    ("npm test && echo ok; echo done", "; echo"),
+    ("set -e; pytest && echo ok; true", "; true"),   # set -e skips a && chain's inner commands
+    ("pytest && echo ok & true", "& true"),
+    ("pytest && echo ok &", "& (background)"),
+])
+def test_sec284_check_inside_an_and_chain_then_a_later_command_is_masked(command, how):
+    found = [m for m in masking(command) if m[0] == "masked_exit_code"]
+    assert found and found[0][1] == how
+
+
+def test_sec284_and_chain_then_exit_0_is_swallowed():
+    assert "swallowed_failure" in _kinds("pytest && echo ok; exit 0")
+    assert "swallowed_failure" in _kinds("pytest && echo ok || true")
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q && echo ok",                # the chain's status is the check's
+    "set -e; cd app && pytest; true",      # set -e stops on the chain's last command
+    "pytest && echo ok || exit 1",         # the || branch decides
+    "pytest && echo ok & wait $!",         # wait hands on the chain's status
+])
+def test_sec284_chains_that_keep_the_status_are_not_masked_codes(command):
+    assert "masked_exit_code" not in _kinds(command)
+    assert "swallowed_failure" not in _kinds(command)
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q >/dev/null 2>&1 && echo ok; true",
+    "pytest -q >/dev/null 2>&1 && echo ok || true",
+    "pytest -q >/dev/null 2>&1 && echo ok & true",
+])
+def test_sec284_failed_check_hidden_by_an_and_chain_is_not_verified(tmp_path, command):
+    result = _audit(_masked_session(tmp_path, command, ""))
+    (finding,) = result.findings
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert {"masked_exit_code", "swallowed_failure"} & {s.kind for s in result.gaming_signals}
+
+
+def test_sec284_pass_marker_rule_is_unchanged(tmp_path):
+    # A pipe through a verbatim filter: a pass marker still backs the claim.
+    piped = _audit(_masked_session(tmp_path, "pytest -q 2>&1 | tail -3", "5 passed in 0.1s"))
+    assert [f.verdict for f in piped.findings] == [Verdict.VERIFIED]
+    # After a later command no marker counts (SEC-250), inside a && chain too.
+    chained = _audit(_masked_session(tmp_path, "pytest -q && echo ok; true", "5 passed in 0.1s\nok"))
+    assert [f.verdict for f in chained.findings] == [Verdict.UNVERIFIED]
+    # The chain alone keeps the check's status.
+    plain = _audit(_masked_session(tmp_path, "pytest -q && echo ok", "5 passed in 0.1s\nok"))
+    assert [f.verdict for f in plain.findings] == [Verdict.VERIFIED]
