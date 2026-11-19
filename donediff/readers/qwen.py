@@ -40,7 +40,9 @@ at commit 516e963f7a40; the format is internal and moves):
 - write_file (file_path, content) is a write, edit (file_path, old_string,
   new_string; legacy name replace) an edit; every other tool keeps its name.
 
-Lines are read in binary, one at a time, capped at MAX_LINE bytes; a longer
+A session file over MAX_FILE bytes is not read. Lines are read in binary, one
+at a time, capped at MAX_LINE bytes, and each record kept for the chain holds
+only the fields the reader reads, as text (NEW2-I-1); a longer
 line, a line that is not JSON and a record this reader does not know are
 skipped and counted in Session.unrecognised. The reader starts no process and
 makes no network call; paths it reads from the log are checked later through
@@ -62,6 +64,7 @@ from .codex import _UNSAFE, _join, _lines, clean_path
 from .gemini import _entries, _is_plain_dir, result_text
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
+MAX_FILE = 512 * 1024 * 1024  # bytes of one session file, as parser.MAX_FILE; larger is not read
 _META_LIMIT = 4 * 1024 * 1024  # bytes of the first line read for discovery and detect
 
 _FILE = re.compile(r"^[0-9A-Za-z_-]{1,128}\.jsonl$")
@@ -206,31 +209,78 @@ _ARG_KEYS = ((_SHELL_TOOLS, ("command", "directory", "is_background")),
              (_EDIT_TOOLS, ("file_path", "old_string", "new_string")))
 
 
+_SCALAR = (str, int, float, bool, type(None))
+_RECORD_TEXT = ("parentUuid", "sessionId", "timestamp", "cwd")  # read only when text
+_DISPLAY_KEYS = ("type", "version", "exitCode", "outcome", "output")  # shell_display reads these
+
+
 def _lean_call(call: dict) -> dict:
-    """A functionCall with only the keys and args _Build reads (QA-029)."""
-    lean = {key: call[key] for key in ("id", "name") if key in call}
+    """A functionCall with only the keys and args _Build reads (QA-029, NEW2-I-1)."""
+    lean = {"name": call["name"]} if isinstance(call.get("name"), str) else {}
+    if "id" in call:  # _Build reads str(id)
+        lean["id"] = call["id"] if isinstance(call["id"], _SCALAR) else ""
     args = call.get("args")
     if isinstance(args, dict):
         name = _str(call.get("name"))[:128]
         keys = next((keys for tools, keys in _ARG_KEYS if name in tools), None)
+        # _Build reads these through _str, and is_background only when True
         lean["args"] = (kept_input(args) if keys is None
-                        else {key: args[key] for key in keys if key in args})
+                        else {key: args[key] for key in keys
+                              if isinstance(args.get(key), (str, bool))})
     return lean
 
 
+def _lean_response(response: dict) -> dict:
+    """A functionResponse with only its id and the output / error result_text reads.
+    An "error" that is not text stays a key (None): its presence names the status."""
+    lean = {"id": response["id"]} if isinstance(response.get("id"), str) else {}
+    body = response.get("response")
+    if isinstance(body, dict):
+        lean["response"] = {key: (body[key] if isinstance(body[key], str) else None)
+                            for key in ("output", "error") if key in body}
+    return lean
+
+
+def _lean_part(part):
+    """A part with only what _Build and _results read; None when it keeps nothing.
+    _Build reads a part's functionCall before its text, so a call part keeps only its call."""
+    if not isinstance(part, dict):
+        return None
+    lean = {}
+    if isinstance(part.get("functionCall"), dict):
+        lean["functionCall"] = _lean_call(part["functionCall"])
+    if isinstance(part.get("functionResponse"), dict):
+        lean["functionResponse"] = _lean_response(part["functionResponse"])
+    if isinstance(part.get("text"), str):
+        lean["text"] = part["text"]
+        if part.get("thought") is True:
+            lean["thought"] = True
+    return lean or None
+
+
 def _lean(record: dict) -> dict:
-    """An assistant record whose tool calls hold only what _Build reads, so an
-    unmodelled tool's padded input is not held while every record is kept for
-    the chain (QA-029, the SEC-293 follow-up to I-1). _Build reads a part's
-    functionCall before its text, so a call part keeps only its call."""
-    message = record.get("message")
-    parts = message.get("parts") if isinstance(message, dict) else None
-    if record.get("type") != "assistant" or not isinstance(parts, list):
-        return record
-    parts = [{"functionCall": _lean_call(part["functionCall"])}
-             if isinstance(part, dict) and isinstance(part.get("functionCall"), dict) else part
-             for part in parts]
-    return {**record, "message": {**message, "parts": parts}}
+    """A record with only the keys, parts and result fields _Build reads, as
+    text, so padding anywhere in any record type (a list where text belongs, a
+    response's other fields, toolCallResult, an extra key) is not held while
+    every record is kept for the chain (QA-029, NEW2-I-1: 18x the file size)."""
+    lean = {"uuid": record["uuid"], "type": record["type"]}
+    for key in _RECORD_TEXT:
+        if isinstance(record.get(key), str):
+            lean[key] = record[key]
+    if "subtype" in record:  # its presence marks a user record that is not a typed prompt
+        lean["subtype"] = record["subtype"] if isinstance(record["subtype"], str) else ""
+    parts = _parts(record)
+    if parts:
+        lean["message"] = {"parts": [p for p in map(_lean_part, parts) if p is not None]}
+    info = record.get("toolCallResult")
+    if isinstance(info, dict):
+        kept = {"status": info["status"]} if isinstance(info.get("status"), str) else {}
+        display = info.get("resultDisplay")
+        if isinstance(display, dict):
+            kept["resultDisplay"] = {key: display[key] for key in _DISPLAY_KEYS
+                                     if key in display and isinstance(display[key], _SCALAR)}
+        lean["toolCallResult"] = kept
+    return lean
 
 
 def _rewound(records: list[dict], chain: list[dict]) -> dict[str, list[dict]]:
@@ -439,6 +489,9 @@ def parse_session(path: str | Path) -> Session:
         raise UnreadableSession("a network path is never read")
     session = Session(path=str(path))
     records: list[dict] = []
+    if path.stat().st_size > MAX_FILE:  # as parse_transcript does (NEW2-I-1)
+        raise UnreadableSession(f"session file is larger than donediff reads "
+                                f"({MAX_FILE // (1024 * 1024)} MiB): {path.name}")
     with open(path, "rb") as fh:
         for line in _lines(fh, MAX_LINE):
             if line is None:

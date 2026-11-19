@@ -39,8 +39,10 @@ branch main at commit 4ed06ed0ddc5; the format is internal and moves):
   new_string) an edit; every other tool is kept under its own name.
 - Retention: Gemini deletes sessions older than 30 days by default.
 
-Lines are read in binary, one at a time, capped at MAX_LINE bytes (an older
-one-document .json session at MAX_JSON); parser.loads also refuses a line or
+A session file over MAX_FILE bytes is not read. Lines are read in binary, one
+at a time, capped at MAX_LINE bytes (an older one-document .json session at
+MAX_JSON), and the replay keeps only the fields the reader reads, as text
+(NEW2-I-1); parser.loads also refuses a line or
 document with more than MAX_VALUES values, so memory stays near a few times
 the text (SEC-241). A longer line, a line that is not JSON, a record this reader does not know and a
 message type it does not know are skipped and counted in Session.unrecognised.
@@ -64,6 +66,7 @@ from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, _join, _lines, clean_path
 
 MAX_LINE = 32 * 1024 * 1024  # bytes in one log line; a longer line is skipped
+MAX_FILE = 512 * 1024 * 1024  # bytes of one session file, as parser.MAX_FILE; larger is not read
 MAX_JSON = 64 * 1024 * 1024  # bytes of an older one-document .json session
 _META_LIMIT = 4 * 1024 * 1024  # bytes of the first line read for discovery and detect
 _ROOT_LIMIT = 4096  # bytes of a .project_root file
@@ -284,26 +287,87 @@ def shell_result(text: str) -> tuple[int | None, str]:
 
 # -- the reader ---------------------------------------------------------------
 
-_CALL_KEYS = ("id", "name", "timestamp", "status", "result", "resultDisplay")
 _ARG_KEYS = ((_SHELL_TOOLS, ("command", "dir_path")),
              (_WRITE_TOOLS, ("file_path", "content")),
              (_EDIT_TOOLS, ("file_path", "old_string", "new_string")))
+_META_KEYS = ("sessionId", "startTime")  # the metadata parse_session reads
+_SCALAR = (str, int, float, bool, type(None))
+
+# Everything the replay holds keeps only what _Build reads, as text: a record's
+# id, type, timestamp, content text and tool calls; a call's id, name, status,
+# read args, result text and a text resultDisplay. Padding anywhere else in a
+# record (a list where text belongs, an extra key, a result's other fields) is
+# dropped as each line is read, so it is never held for the whole session
+# (NEW2-I-1, the SEC-293 / QA-029 class: 18x the file size before).
+
+
+def lean_parts(content):
+    """A PartListUnion with only the text parts_text reads; a str stays a str."""
+    if isinstance(content, str):
+        return content
+    kept = []
+    for item in content if isinstance(content, list) else [content]:
+        if isinstance(item, str):
+            kept.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("text"), str):
+            kept.append({"text": item["text"], "thought": True} if item.get("thought") is True
+                        else {"text": item["text"]})
+    return kept
+
+
+def lean_result(result) -> list:
+    """Result Parts with only the text result_text reads (output, error, text)."""
+    kept = []
+    for item in result if isinstance(result, list) else [result]:
+        if isinstance(item, str):
+            kept.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        response = item.get("functionResponse")
+        if isinstance(response, dict):
+            body = response.get("response")
+            body = body if isinstance(body, dict) else {}
+            kept.append({"functionResponse": {"response": {
+                key: body[key] for key in ("output", "error") if isinstance(body.get(key), str)}}})
+        elif isinstance(item.get("text"), str):
+            kept.append({"text": item["text"]})
+    return kept
 
 
 def _lean_call(call):
-    """A tool call with only the keys and args _Build reads, so an unmodelled
-    tool's padded input is not held while the whole session is replayed
-    (QA-029, the SEC-293 follow-up to I-1)."""
+    """A tool call with only the keys and args _Build reads, so a padded input
+    or result is not held while the whole session is replayed (QA-029,
+    NEW2-I-1)."""
     if not isinstance(call, dict):
-        return call
-    lean = {key: call[key] for key in _CALL_KEYS if key in call}
+        return None  # still counted unrecognised by _Build, and holds nothing
+    lean = {key: call[key] for key in ("name", "timestamp", "status")
+            if isinstance(call.get(key), str)}
+    if "id" in call:  # _Build reads str(id); a patch matches it by value
+        lean["id"] = call["id"] if isinstance(call["id"], _SCALAR) else ""
+    if "result" in call:
+        lean["result"] = lean_result(call["result"])
+    if isinstance(call.get("resultDisplay"), str):
+        lean["resultDisplay"] = call["resultDisplay"]
     args = call.get("args")
     if isinstance(args, dict):
-        name = call.get("name") if isinstance(call.get("name"), str) else ""
-        name = name[:128]
+        name = lean.get("name", "")[:128]
         keys = next((keys for tools, keys in _ARG_KEYS if name in tools), None)
-        lean["args"] = (kept_input(args) if keys is None
-                        else {key: args[key] for key in keys if key in args})
+        lean["args"] = (kept_input(args) if keys is None  # _Build reads these through _str
+                        else {key: args[key] for key in keys if isinstance(args.get(key), str)})
+    return lean
+
+
+def _lean_message(record: dict) -> dict:
+    """A message record with only the keys _History and _Build read."""
+    lean = {"id": record["id"], "type": record["type"]}
+    if isinstance(record.get("timestamp"), str):
+        lean["timestamp"] = record["timestamp"]
+    if "content" in record:
+        lean["content"] = lean_parts(record["content"])
+    calls = record.get("toolCalls")
+    if isinstance(calls, list):
+        lean["toolCalls"] = [_lean_call(c) for c in calls]
     return lean
 
 
@@ -329,13 +393,19 @@ class _History:
             if isinstance(update.get("messages"), list):
                 self.messages.clear()
                 self.many(update["messages"])
-            self.meta.update({k: v for k, v in update.items() if k != "messages"})
+            self.set_meta(update)
         elif _is_meta(record):
-            self.meta.update({k: v for k, v in record.items() if k != "messages"})
+            self.set_meta(record)
             if isinstance(record.get("messages"), list):
                 self.many(record["messages"])
         else:
             self.session.unrecognised += 1
+
+    def set_meta(self, update: dict) -> None:
+        """Only the metadata read later, as text ("" for a value of the wrong type)."""
+        for key in _META_KEYS:
+            if key in update:
+                self.meta[key] = update[key] if isinstance(update[key], str) else ""
 
     def many(self, messages: list) -> None:
         for msg in messages:
@@ -348,10 +418,8 @@ class _History:
         if record.get("type") not in _TYPES:
             self.session.unrecognised += 1
             return
-        calls = record.get("toolCalls")
-        if isinstance(calls, list):  # held until the replay ends: only what _Build reads (QA-029)
-            record = {**record, "toolCalls": [_lean_call(c) for c in calls]}
-        self.messages[record["id"]] = record
+        # held until the replay ends: only what _Build reads (QA-029, NEW2-I-1)
+        self.messages[record["id"]] = _lean_message(record)
 
     def rewind(self, target: str) -> None:
         ids = list(self.messages)
@@ -367,7 +435,7 @@ class _History:
             return
         msg = dict(msg)
         if "content" in patch and patch["content"] is not None:
-            msg["content"] = patch["content"]
+            msg["content"] = lean_parts(patch["content"])
         calls = msg.get("toolCalls")
         if isinstance(patch.get("toolCalls"), list) and msg.get("type") == "gemini" \
                 and isinstance(calls, list):
@@ -377,7 +445,7 @@ class _History:
                     continue
                 for call in calls:
                     if isinstance(call, dict) and call.get("id") == tc_patch.get("id"):
-                        call["result"] = tc_patch["result"]
+                        call["result"] = lean_result(tc_patch["result"])
                         break
             msg["toolCalls"] = calls
         self.messages[msg["id"]] = msg
@@ -510,6 +578,13 @@ class _Build:
         self._hints(event)
 
 
+def too_big(path: Path) -> None:
+    """Refuse a session file over MAX_FILE, as parse_transcript does (NEW2-I-1)."""
+    if path.stat().st_size > MAX_FILE:
+        raise UnreadableSession(f"session file is larger than donediff reads "
+                                f"({MAX_FILE // (1024 * 1024)} MiB): {path.name}")
+
+
 def parse_session(path: str | Path) -> Session:
     path = Path(path)
     if is_remote_path(path):
@@ -523,6 +598,7 @@ def parse_session(path: str | Path) -> Session:
                                     "(too big, not JSON, or not a Gemini session)")
         history.add(record)
     else:
+        too_big(path)
         with open(path, "rb") as fh:
             for line in _lines(fh, MAX_LINE):
                 if line is None:
