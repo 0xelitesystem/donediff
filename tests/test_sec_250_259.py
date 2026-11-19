@@ -326,3 +326,33 @@ def test_sec231_kept_input_holds_what_the_engine_reads():
         "new_string": "b", "edits": [{"old_string": "1", "new_string": "2"}, {"new_string": "3"}]}
     assert parser.kept_input(None) == {} and parser.kept_input(["command"]) == {}
     assert parser.kept_input({"command": 7}) == {"command": "7"}
+
+
+# -- SEC-238: a backslash before a backtick opens no code span -----------------
+
+_IMG = "<img src=http://127.0.0.1:9/b.png>"
+
+
+@pytest.mark.parametrize("cell", [False, True])
+def test_sec238_backslash_backtick_leaves_no_raw_html(cell):
+    from donediff.report import _md
+    shown = _md("x \\`" + _IMG + "` y", cell=cell)
+    # Read the CommonMark way, `\`` is a literal backtick, so the text after it
+    # is plain text: the < must be an entity, and no backslash escape is left.
+    assert "&#92;" in shown and "\\`" not in shown
+    plain = shown.replace("`" + _IMG + "`", "")  # the real code span that follows
+    assert "<" not in plain
+
+
+def test_sec238_backslash_backtick_in_a_markdown_report(tmp_path):
+    from donediff.report import render_markdown
+    result = audit(_one_run(tmp_path, "python -m pytest -q", "12 passed",
+                            claim="All tests pass \\`" + _IMG + "`."))
+    report = render_markdown(result)
+    assert "\\`<img" not in report and "&#92;`<img" in report
+
+
+def test_sec238_backslashes_outside_code_spans_still_read_the_same():
+    from donediff.report import _md
+    assert _md("C:\\work\\a.py and `C:\\x`") == "C:&#92;work&#92;a.py and `C:\\x`"
+    assert _md("a\\|b", cell=True) == "a&#92;\\|b"

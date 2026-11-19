@@ -261,8 +261,11 @@ _TICKS = re.compile(r"`+")
 def _inert(text: str) -> str:
     """Markdown text outside code spans: no raw HTML or autolink (< and > as
     entities) and no inline link or image (the ( after ] as an entity, which
-    CommonMark never reads as structure)."""
-    return text.replace("<", "&lt;").replace(">", "&gt;").replace("](", "]&#40;")
+    CommonMark never reads as structure). A backslash becomes an entity too
+    (SEC-238): `\\`` escapes the backtick in CommonMark, so it opens no code
+    span, while _md would read one there and leave the text after it raw."""
+    return (text.replace("\\", "&#92;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("](", "]&#40;"))
 
 
 def _md(text: str, cell: bool = False) -> str:
