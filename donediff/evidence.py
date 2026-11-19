@@ -275,8 +275,9 @@ _STATUS_EXIT = re.compile(
 _STATUS_REF = re.compile(r"\$\{?(?:\?|PIPESTATUS\b|LASTEXITCODE\b)", re.IGNORECASE)
 _STATUS_SAVED = re.compile(r"\b([A-Za-z_]\w*)=\"?\$\{?(?:\?|PIPESTATUS\[\d+\])", re.IGNORECASE)
 _EXIT_WORD = re.compile(r"^(?:exit|return)(?:\s+(?:/b\s+)?(\S+?))?[\s;)}]*$", re.IGNORECASE)
-# `wait <pid>` returns the background job's status; a bare `wait` returns 0.
-_WAIT_FOR_JOB = re.compile(r"^wait\s+\S", re.IGNORECASE)
+# `wait <pid>` returns the background job's status; a bare `wait` returns 0,
+# and so does `wait -f` with no id (V-1).
+_WAIT_FOR_JOB = re.compile(r"^wait\s+(?:\$!|\$\{!\}|%[%+1]|-n)\s*$", re.IGNORECASE)
 # Words that close a block; they do not set the status themselves.
 _BLOCK_CLOSERS = frozenset({"done", "fi", "esac", "}", ")", "end"})
 
@@ -540,8 +541,11 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
         if checks[pos] and not read_after:
             while end < len(statements) - 1 and statements[end].op == "&&":
                 end += 1
-        if checks[pos] and statements[end].op == "&" and not read_after and not any(
-                _WAIT_FOR_JOB.match(n) for n in norms[end + 1:]):
+        # The wait keeps the status only as the call's last statement, right
+        # after the check's `&` (V-1): `& wait $! || true`, `& wait $!; true`
+        # and `& true & wait $!` (the other job) exit 0.
+        waited = end + 2 == len(statements) and bool(_WAIT_FOR_JOB.match(norms[end + 1]))
+        if checks[pos] and statements[end].op == "&" and not read_after and not waited:
             # A check sent to the background (`pytest & wait`), or cmd's
             # `a & b`: the call's status is whatever runs after it.
             nxt = next((program(st.stages[0]) for st in statements[end + 1:]
