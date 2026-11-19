@@ -103,7 +103,11 @@ _TOKEN_PREFIX_STRICT = re.compile(r"\b(npm_|hf_)[A-Za-z0-9]{30,}\b")
 # A token starts where no token character comes before it (SEC-254): with
 # \b, every "eyJ" after a "-" in one long run was a new start, each scanning
 # to the end of the run, so the search was quadratic in the run's length.
-_JWT = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+# A token glued to a "-" (jwt-<token>, --jwt-<token>, a "-" list item) is
+# still one (I-4): there its first part may not hold a "-", so each such
+# start stops at the next "-" and the search stays linear.
+_JWT = re.compile(r"(?:(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}|(?<=-)eyJ[A-Za-z0-9_]{8,})"
+                  r"\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # A PEM private key: the body between its BEGIN and END lines (or the end).
 _PEM = re.compile(r"(-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----)[\s\S]*?"
                   r"(-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|\Z)")

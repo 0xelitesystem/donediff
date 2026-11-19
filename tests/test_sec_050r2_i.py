@@ -9,11 +9,15 @@ from __future__ import annotations
 import gc
 import importlib.util
 import json
+import time
 import tracemalloc
 from pathlib import Path
 
+import pytest
+
 from donediff.models import OTHER
 from donediff.readers import CODEX, GEMINI, QWEN
+from donediff.redact import redact_secrets
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -93,3 +97,36 @@ def test_i1_qwen_unmodelled_tool_keeps_only_read_keys(tmp_path):
     (event,) = QWEN.parse(path).tool_calls()
     assert event.tool_action == OTHER and event.result_seen
     assert event.tool_input == {"file_path": "notes.md"}
+
+
+# -- I-4: a token glued to a "-" is masked again (SEC-254 regression) ----------
+
+def _made_up_token():
+    part = "e" + "yJ" + "a" * 10
+    return part + "." + part + "." + "b" * 10  # three dot-joined parts, not a real token
+
+
+@pytest.mark.parametrize("before", ["--jwt-", "jwt-", "- ", "-", "cache-", "X-Auth-"])
+def test_i4_a_token_after_a_dash_is_masked(before):
+    token = _made_up_token()
+    shown = redact_secrets("value " + before + token + " end")
+    assert token not in shown and shown.startswith("value " + before)
+
+
+@pytest.mark.parametrize("before", [" ", "=", ":", "\"", "("])
+def test_i4_the_other_starts_are_still_masked(before):
+    token = _made_up_token()
+    assert token not in redact_secrets("auth" + before + token)
+
+
+def test_i4_glued_to_a_word_it_stays_part_of_the_word():
+    token = _made_up_token()
+    assert ("auth" + token) in redact_secrets("auth" + token)
+
+
+@pytest.mark.parametrize("unit", ["e" + "yJ-", "-e" + "yJaaaaaaaa", "-e" + "yJaaaaaaaa.e" + "yJ"])
+def test_i4_mask_stays_linear_on_dash_runs(unit):
+    text = unit * (312 * 1024 // len(unit))
+    started = time.perf_counter()
+    redact_secrets(text)
+    assert time.perf_counter() - started < 1.0
