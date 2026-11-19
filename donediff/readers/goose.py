@@ -73,7 +73,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import loads
+from ..parser import kept_input, loads
 from ..shell import is_remote_path
 from .base import UnreadableSession, _absolute, _is_link, _str, pick_session
 from .base import _int as _exit
@@ -447,7 +447,7 @@ class _Parse:
         elif developer and tool == "text_editor":
             event = self._text_editor(name, call_id, args, path, rowid)
         else:
-            event = self._event(name, OTHER, call_id, args, rowid)
+            event = self._event(name, OTHER, call_id, kept_input(args, edits=False), rowid)  # NEW2-I-4
         self.pending.setdefault(call_id, []).append(event)
 
     def _text_editor(self, name: str, call_id: str, args: dict, path: str, rowid: int) -> Event:
@@ -465,7 +465,7 @@ class _Parse:
         if command in ("insert", "undo_edit"):  # both change the file
             return self._event(name, EDIT, call_id, {
                 "file_path": path, "old_string": "", "new_string": _str(args.get("new_str"))}, rowid)
-        return self._event(name, OTHER, call_id, args, rowid)
+        return self._event(name, OTHER, call_id, kept_input(args, edits=False), rowid)  # NEW2-I-4
 
     @staticmethod
     def _hints(event: Event) -> None:

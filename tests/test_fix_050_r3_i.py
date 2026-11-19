@@ -405,3 +405,84 @@ def test_new2_i3b_mask_stays_linear_on_word_runs(unit):
     started = time.perf_counter()
     redact_secrets(text)
     assert time.perf_counter() - started < 2.0
+
+
+# -- NEW2-I-4: Goose, OpenCode and Cline keep only the read keys of a tool they do not model --
+
+_UNMODELLED = {"query": "x", "file_path": "notes.md", "edits": [{"new_string": "1"}] * 3}
+
+
+def _kept(reader, path):
+    """Bytes still held once the session is parsed (the session kept alive)."""
+    gc.collect()
+    tracemalloc.start()
+    try:
+        session = reader.parse(path)
+        gc.collect()
+        kept = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    return session, kept
+
+
+def _goose_session(tmp_path, n_calls, where, args):
+    mk_goose = _load("make_goose_050r3", FIXTURES / "goose" / "make_goose.py")
+    from donediff.readers import GOOSE
+    builder = mk_goose.Builder(tmp_path / f"goose-{where}-{n_calls}.db").session("20260610_1")
+    builder.user("Find it.")
+    for _ in range(n_calls):
+        if where == "tool":  # a tool outside the developer extension
+            builder.tool("search__find", dict(args))
+        else:  # a developer text_editor command donediff does not model
+            builder.tool("developer__text_editor", {"command": "view", "path": "a.py", **args})
+    builder.say("Done.")
+    return GOOSE, GOOSE.resolve(builder.close())
+
+
+def _opencode_session(tmp_path, n_calls, where, args):
+    mk_opencode = _load("make_opencode_050r3", FIXTURES / "opencode" / "make_opencode.py")
+    from donediff.readers import OPENCODE
+    builder = mk_opencode.Builder(tmp_path / f"opencode-{n_calls}.db").session(
+        "ses_r3i40001", directory=str(tmp_path))
+    builder.user("Find it.")
+    for _ in range(n_calls):
+        builder.tool("websearch", dict(args), output="ok")
+    builder.say("Done.")
+    return OPENCODE, OPENCODE.resolve(builder.close())
+
+
+def _cline_session(tmp_path, n_calls, where, args):
+    mk_cline = _load("make_cline_050r3", FIXTURES / "cline" / "make_cline.py")
+    from donediff.readers import CLINE
+    doc = mk_cline.Doc()
+    doc.user("Find it.")
+    name = "web_fetch" if where == "tool" else "run_commands"  # run_commands with no command
+    for i in range(n_calls):
+        doc.assistant(calls=[mk_cline.call(f"c{i}", name, dict(args))])
+        doc.results(mk_cline.result(f"c{i}", name, "ok"))
+    doc.assistant("Done.")
+    return CLINE, mk_cline.write(tmp_path / f"{n_calls}" / f"{mk_cline.SID}.messages.json",
+                                 doc.document())
+
+
+_READERS_I4 = [(_goose_session, "tool"), (_goose_session, "text_editor"),
+               (_opencode_session, "tool"), (_cline_session, "tool"), (_cline_session, "shell")]
+
+
+@pytest.mark.parametrize("make, where", _READERS_I4)
+def test_new2_i4_unmodelled_tool_keeps_only_read_keys(tmp_path, make, where):
+    reader, path = make(tmp_path, 1, where, _UNMODELLED)
+    calls = reader.parse(path).tool_calls()
+    view = {"command": "view"} if where == "text_editor" else {}  # "command" is a read key
+    assert len(calls) == 1 and calls[0].tool_input == {**view, "file_path": "notes.md"}
+
+
+@pytest.mark.parametrize("make, where", _READERS_I4)
+def test_new2_i4_padding_in_an_unmodelled_tool_is_not_kept(tmp_path, make, where):
+    pad = {"query": "x", "pad": _pad()}  # ~4 MB once parsed, per call
+    reader, path = make(tmp_path, 8, where, pad)
+    session, kept = _kept(reader, path)
+    assert len(session.tool_calls()) == 8
+    assert kept < 2 * 1024 * 1024, kept  # 8 held pads were ~30 MB
+    view = {"command": "view"} if where == "text_editor" else {}
+    assert all(e.tool_input == view for e in session.tool_calls())

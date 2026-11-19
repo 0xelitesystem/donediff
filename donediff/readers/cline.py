@@ -75,7 +75,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, log_int, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import loads, over_edit_budget
+from ..parser import kept_input, loads, over_edit_budget
 from ..shell import is_remote_path
 from .base import UnreadableSession, _str, pick_session
 from .codex import _UNSAFE, argv_command, clean_path, parse_patch
@@ -343,7 +343,8 @@ class _Build:
         found = self.results.get(call_id, []) if call_id else []
         if name in _SHELL_TOOLS:
             events = [self._event(name, SHELL, call_id, {"command": c})
-                      for c in commands_of(raw)] or [self._event(name, OTHER, call_id, args)]
+                      for c in commands_of(raw)] \
+                or [self._event(name, OTHER, call_id, kept_input(args, edits=False))]  # NEW2-I-4
             for result in found:  # a failure in any copy of the result wins
                 self.shell_results(events, result)
             return
@@ -379,7 +380,7 @@ class _Build:
                     events.append(self._event(name, OTHER, call_id, {"file_path": path}))
             events = events or [self._event(name, OTHER, call_id, {})]
         else:
-            events = [self._event(name, OTHER, call_id, args)]
+            events = [self._event(name, OTHER, call_id, kept_input(args, edits=False))]  # NEW2-I-4
         for result in found:
             self.plain_result(events, result, name in _EDITOR_TOOLS or name in _PATCH_TOOLS)
 

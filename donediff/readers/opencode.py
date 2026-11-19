@@ -56,7 +56,7 @@ from pathlib import Path
 
 from ..evidence import FAILURE_IN_OUTPUT, PASS_IN_OUTPUT, check_types, passed_counts
 from ..models import EDIT, MULTI_EDIT, OTHER, SHELL, WRITE, Event, EventKind, Session
-from ..parser import loads, over_edit_budget
+from ..parser import kept_input, loads, over_edit_budget
 from ..shell import is_remote_path
 from .base import UnreadableSession, _absolute, _is_link, _str, pick_session
 from .base import _int as _exit
@@ -571,7 +571,7 @@ class _Parse:
         elif name in _PATCH_TOOLS:
             events = self.patch(name, call_id, _str(args.get("patchText")))
         else:
-            events = [self._event(name, OTHER, call_id, args)]
+            events = [self._event(name, OTHER, call_id, kept_input(args, edits=False))]  # NEW2-I-4
         self.result(events, state)
 
     def patch(self, name: str, call_id: str, text: str) -> list[Event]:
