@@ -237,3 +237,47 @@ def test_sec252_exit_literal_rule():
 
 def test_sec252_a_trap_exit_of_2_pow_60_swallows_too():
     assert "swallowed_failure" in _kinds("trap 'exit " + str(2 ** 60) + "' EXIT; " + _QUIET)
+
+
+# -- SEC-253: commands that run no test, and output that says none ran ---------
+
+@pytest.mark.parametrize("command", [
+    "npx vitest list", "pnpm vitest list", "vitest list --json", "cargo nextest list",
+    "go test -c ./pkg", "go test -c -o /dev/null ./pkg", "./gradlew test --exclude-task test",
+    "gradle test --exclude-task=test", "npm test --if-present", "npm run test --if-present",
+])
+def test_sec253_forms_that_run_no_test_back_no_test_claim(tmp_path, command):
+    from donediff.evidence import check_types
+    assert not check_types(command)
+    (finding,) = audit(_one_run(tmp_path, command, "a.test.ts > adds")).findings
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("command, output", [
+    ("mvn test -Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false",
+     "[INFO] Tests run: 0, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS"),
+    ("dotnet test --filter FullyQualifiedName=None",
+     "No test matches the given testcase filter `FullyQualifiedName=None` in /p/bin/t.dll"),
+    ("python -m pytest -q --lf --lfnf=none",
+     "run-last-failure: no previously failed tests, deselecting all items.\n6 deselected in 0.01s"),
+    ("python -m pytest -q -k zzz", "6 deselected in 0.01s"),
+    ("python -m pytest -k zzz", "==================== 6 deselected in 0.01s ===================="),
+])
+def test_sec253_output_that_says_no_test_ran_is_unverified(tmp_path, command, output):
+    (finding,) = audit(_one_run(tmp_path, command, output)).findings
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "says no test ran" in finding.evidence
+
+
+@pytest.mark.parametrize("command, output", [
+    ("npx vitest run", "Test Files  1 passed (1)\n     Tests  3 passed (3)"),
+    ("cargo nextest run", "Summary [0.1s] 3 tests run: 3 passed, 0 skipped"),
+    ("go test ./pkg", "ok  \tm/pkg\t0.01s"),
+    ("mvn test", "[INFO] Tests run: 0, Failures: 0, Errors: 0, Skipped: 0, in a.EmptyTest\n"
+                 "[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS"),
+    ("python -m pytest -q -k add", "3 passed, 6 deselected in 0.01s"),
+    ("pytest -c pytest.ini", "3 passed in 0.01s"),
+])
+def test_sec253_runs_that_ran_tests_still_verify(tmp_path, command, output):
+    (finding,) = audit(_one_run(tmp_path, command, output)).findings
+    assert finding.verdict is Verdict.VERIFIED

@@ -146,19 +146,28 @@ def exit_literal_fails(code: str) -> bool:
 # What a runner prints when it ran no test at all (SEC-222).
 _RAN_NOTHING = re.compile(
     r"\bno tests ran\b|\bcollected 0 items\b|^Ran 0 tests\b|\bTests are skipped\b"
-    r"|\bNo tests found\b|\bNo tests were found\b|\bno tests to run\b",
+    r"|\bNo tests found\b|\bNo tests were found\b|\bno tests to run\b"
+    # SEC-253: dotnet test with a filter that matches nothing; pytest when
+    # every test was deselected (the summary line starts with the count).
+    r"|\bNo test matches the given testcase filter\b|\bdeselecting all items\b"
+    r"|^[=\s]*\d+ deselected\b",
     re.IGNORECASE | re.MULTILINE)
 _GO_OK_LINE = re.compile(r"^ok\s+\S+.*$", re.MULTILINE)
+# Maven Surefire and JUnit: "Tests run: N, Failures: ..." (SEC-253).
+_TESTS_RUN = re.compile(r"\bTests run: (\d+),")
 
 
 def ran_nothing(output: str) -> bool:
     """True when the output says the runner ran no test (go: every package
-    line says [no tests to run])."""
+    line says [no tests to run]; Maven: every "Tests run:" count is 0)."""
     if not output:
         return False
     go_ok = _GO_OK_LINE.findall(output)
     if go_ok:
         return all("[no tests to run]" in line for line in go_ok)
+    runs = _TESTS_RUN.findall(output)
+    if runs:
+        return not any(n.strip("0") for n in runs)
     return bool(_RAN_NOTHING.search(output))
 
 
@@ -226,7 +235,11 @@ _READ_ONLY_FLAGS = frozenset({
     "--setup-plan", "--setup-only", "--fixtures", "--fixtures-per-test",
     "--markers", "--list", "-list", "--show-only", "-DskipTests",
     "-DskipTests=true", "-Dmaven.test.skip", "-Dmaven.test.skip=true",
+    # SEC-253: npm runs nothing and exits 0 when the script is missing.
+    "--if-present",
 })
+# SEC-253: subcommands that list the tests instead of running them.
+_LIST_SUBCOMMAND = frozenset({"vitest", "nextest"})
 # ctest -N lists the tests without running them.
 _CTEST_LIST = frozenset({"-N", "--show-only"})
 # Option variables that change what a runner does without showing in its argv.
@@ -270,8 +283,16 @@ def _read_only(norm: str) -> bool:
         return True
     if words and words[0] == "ctest" and any(w in _CTEST_LIST for w in words[1:]):
         return True
-    # gradle test -x test: the test task is excluded.
-    if any(a == "-x" and b.lstrip(":") == "test" for a, b in zip(words, words[1:])):
+    # gradle test -x test (--exclude-task test): the test task is excluded.
+    if any(a in ("-x", "--exclude-task") and b.lstrip(":") == "test"
+           for a, b in zip(words, words[1:])) or "--exclude-task=test" in words:
+        return True
+    # vitest list, cargo nextest list (SEC-253).
+    if any(re.split(r"[\\/]", a)[-1] in _LIST_SUBCOMMAND and b == "list"
+           for a, b in zip(words, words[1:])):
+        return True
+    # go test -c compiles the test binary and runs nothing (SEC-253).
+    if words[:2] == ["go", "test"] and any(w in ("-c", "-c=true") for w in words[2:]):
         return True
     return bool(words) and words[0] in _MAKE_PROGRAMS and any(
         w in _MAKE_DRY_RUN for w in words[1:])
