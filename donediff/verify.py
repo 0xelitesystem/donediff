@@ -40,7 +40,9 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from .evidence import CHECK_TYPES, commit_subjects, masked_exit, masking, stage_types
+from .evidence import (
+    CHECK_TYPES, commit_subjects, masked_exit, masking, stage_types, zero_exit_trap,
+)
 from .gitstate import GitError, GitRepo
 from .models import (
     EDIT, NOTEBOOK_EDIT, WRITE, Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
@@ -826,7 +828,7 @@ def _verify_command_ok(timeline: Timeline, claim: Claim, ctx: _Context) -> Findi
     if run.exit_code is None:
         return _found(claim, ctx, Verdict.UNVERIFIED, _status_only(run) if run.status
                       else f"the run has no success record in the log: {shown}", run)
-    how = how or _how_masked(run)
+    how = how or _how_masked(run) or zero_exit_trap(run.command)
     if how:
         return _found(claim, ctx, Verdict.UNVERIFIED,
                       f"exit code of `{_short(claim.detail)}` hidden by `{how}`: {shown}", run)

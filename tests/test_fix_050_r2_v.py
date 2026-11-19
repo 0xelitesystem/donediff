@@ -60,3 +60,31 @@ def test_v1_a_wait_that_does_not_return_the_check_status_is_a_mask(tmp_path, com
 ])
 def test_v1_a_wait_for_the_check_job_keeps_its_status(command):
     assert _kinds(command) == []
+
+
+# -- V-2: a COMMAND_OK claim reads the trap too --------------------------------
+
+_HELLO = "python hello.py"
+_WORKED = "`python hello.py` worked."
+
+
+@pytest.mark.parametrize("command", [
+    "trap 'exit 0' EXIT; " + _HELLO,
+    "bash -c \"trap 'exit 0' EXIT; " + _HELLO + "\"",
+    "trap 'exit 0' ERR; " + _HELLO,
+    "trap { exit 0 }; " + _HELLO,
+])
+def test_v2_a_command_claim_after_a_zero_exit_trap_is_unverified(tmp_path, command):
+    finding, _ = _verdict(tmp_path, command, claim=_WORKED)
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "hidden by `trap" in finding.evidence
+
+
+@pytest.mark.parametrize("command", [
+    _HELLO,
+    "trap 'echo bye' EXIT; " + _HELLO,
+    "trap 'rc=$?; rm -f t.txt; exit $rc' EXIT; " + _HELLO,
+])
+def test_v2_a_command_claim_without_a_zero_exit_trap_still_verifies(tmp_path, command):
+    finding, _ = _verdict(tmp_path, command, claim=_WORKED)
+    assert finding.verdict is Verdict.VERIFIED

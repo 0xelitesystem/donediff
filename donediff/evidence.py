@@ -451,6 +451,23 @@ def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     return reach if reach and _exits_zero(handler) else None
 
 
+def zero_exit_trap(command: str, _depth: int = 0) -> str | None:
+    """The text of a trap in `command` whose handler may exit 0, whatever the
+    call runs (a named command, not only a check), or None (V-2). Shells
+    started through a wrapper (`bash -c "..."`) are read too."""
+    statements = [st for st in split_statements(command) if any(s for s in st.stages)]
+    texts = [_text(st) for st in statements]
+    for pos in range(len(statements)):
+        if _zero_exit_trap(texts, pos):
+            return texts[pos].strip()[:60]
+        for stage in statements[pos].stages:
+            inner = wrapper_inner(stage, launchers=True) if stage and _depth < 2 else None
+            found = zero_exit_trap(inner, _depth + 1) if inner else None
+            if found:
+                return found
+    return None
+
+
 def _text(statement) -> str:
     return " | ".join(s for s in statement.stages if s)
 
