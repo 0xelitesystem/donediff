@@ -20,7 +20,7 @@ _DISQUALIFIERS = re.compile(
     r"\b(?:will|would|should|could|may|might|once|if|unless|until|when|"
     r"whenever|after|let'?s|going to|need(?:s)? to|have to|to make|"
     r"don'?t|doesn'?t|didn'?t|aren'?t|isn'?t|wasn'?t|not|no longer|"
-    r"fail(?:s|ed|ing)?|broken|can'?t|cannot|try|attempt)\b",
+    r"fail(?:s|ed|ing)?|broken|can'?t|cannot|try|attempt|neither|nor|whether)\b",
     re.IGNORECASE,
 )
 
@@ -42,6 +42,14 @@ _BARE_FILE = (r"(?<![\w.\\/:@-])((?:[\w-]+[\\/])*[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A
               r"(?![\w\\/@-]|\.\w)")
 _WEB_TLDS = frozenset({"com", "org", "net", "io", "ai", "dev", "app", "co", "edu", "gov",
                        "info", "biz", "us", "uk"})
+# Libraries named like a file (G-2): "I created a Node.js app" names no file.
+# A React file such as App.js is still one.
+_LIBRARY_NAMES = frozenset({"node.js", "next.js", "nuxt.js", "vue.js", "three.js", "d3.js",
+                            "express.js", "chart.js", "p5.js", "nest.js", "ember.js", "react.js",
+                            "angular.js", "alpine.js", "backbone.js", "deno.js", "bun.js",
+                            "solid.js", "svelte.js"})
+# A file-created phrasing in a question names no claim (G-2), as with COMMAND_OK.
+_NOT_A_QUESTION = r"(?!.*\?\s*$)"
 # The file a file-created phrasing names: in backticks, as a markdown link,
 # or bare. Groups: backticked name, link text, link target, bare name.
 _CREATED_FILE = (r"(?:`([^`\s]+\.[A-Za-z0-9]{1,10})`|" + _MD_FILE_LINK + r"|" + _BARE_FILE + r")")
@@ -81,14 +89,14 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     )),
     (ClaimType.FILE_CREATED, re.compile(
         r"\bcreated\s+(?:the\s+(?:file\s+)?|a\s+(?:new\s+)?(?:file\s+)?|file\s+)?"
-        + _CREATED_FILE,
+        + _CREATED_FILE + _NOT_A_QUESTION,
         re.IGNORECASE,
     )),
     # The passive form: "`hello.py` was successfully created", "hello.py was
     # written". "added to" (put into something) is no creation.
     (ClaimType.FILE_CREATED, re.compile(
         _CREATED_FILE + r"\s+(?:was|were|has\s+been|have\s+been)\s+(?:successfully\s+)?"
-        r"(?:created|written|added(?!\s+to\b))\b",
+        r"(?:created|written|added(?!\s+to\b))\b" + _NOT_A_QUESTION,
         re.IGNORECASE,
     )),
     (ClaimType.FILE_EDITED, re.compile(
@@ -299,8 +307,8 @@ def _base(path: str) -> str:
 
 
 def _bare_file(name: str | None) -> str | None:
-    """A bare file name, or None for a web domain (example.com)."""
-    if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS:
+    """A bare file name, or None for a web domain (example.com) or a library (Node.js)."""
+    if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS or name.lower() in _LIBRARY_NAMES:
         return None
     return name
 

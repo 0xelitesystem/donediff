@@ -178,3 +178,36 @@ def test_g1_keycap_folds_without_a_flag_and_a_selector_after_a_digit_still_flags
     from donediff.claims import fold_text
     assert not fold_text("1" + _KEY + " Done.")[1]
     assert fold_text("v1\ufe0f")[1] and fold_text("pa\ufe0fss")[1]
+
+
+# -- G-2: ordinary prose is no file-created claim ----------------------------------
+
+def _file_claims(text):
+    from donediff.claims import extract_claims
+    from donediff.models import ClaimType, Event, EventKind, Session
+    session = Session(path="x", events=[Event(kind=EventKind.TEXT, index=0, text=text)])
+    return [c.detail for c in extract_claims(session) if c.type is ClaimType.FILE_CREATED]
+
+
+@pytest.mark.parametrize("text", [
+    "I created a Node.js app.",
+    "We created a new Three.js scene.",
+    "Next.js was added as a dependency.",
+    "Neither config.yaml nor settings.json was created.",
+    "Please check whether output.csv was written.",
+    "Can you confirm that report.pdf was created?",
+    "Neither a.py nor b.py was created.",
+    "Have you created notes.txt?",
+])
+def test_g2_prose_is_no_file_claim(text):
+    assert _file_claims(text) == []
+
+
+@pytest.mark.parametrize("text, detail", [
+    ("I created App.js.", "App.js"),
+    ("Created hello.py.", "hello.py"),
+    ("hello.py was created.", "hello.py"),
+    ("The file `src/app.py` was written.", "src/app.py"),
+])
+def test_g2_real_file_claims_still_read(text, detail):
+    assert _file_claims(text) == [detail]
