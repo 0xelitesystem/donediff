@@ -370,3 +370,38 @@ def test_new2_i3_mask_stays_linear_on_dash_runs(unit):
     started = time.perf_counter()
     redact_secrets(text)
     assert time.perf_counter() - started < 2.0
+
+
+# -- NEW2-I-3b: a token glued to a word or "_" is masked (secrets fail closed) ---
+
+@pytest.mark.parametrize("before", ["TOKEN_", "auth", "export JWT_", "Bearer_", "id9"])
+@pytest.mark.parametrize("first", ["a" * 14, "a" * 6 + "-" + "a" * 7, "a" * 6 + "_" + "a" * 7])
+def test_new2_i3b_a_token_glued_to_a_word_is_masked(before, first):
+    from donediff.redact import redact_secrets
+    token = _dash_token(first)
+    shown = redact_secrets(before + token + " end")
+    assert token not in shown and "b" * 14 not in shown and "c" * 20 not in shown
+    assert shown.startswith(before) and shown.endswith(" end")
+
+
+def test_new2_i3b_words_and_dotted_names_that_are_no_token_stay():
+    from donediff.redact import redact_secrets
+    start = "e" + "yJ"
+    for text in ("TOKEN_VALUE auth_header heyJude keyJar", "my_module.sub_module.function_name",
+                 "monkeyJumps.over.the_lazy_dog_today",            # part two is no "eyJ"
+                 "TOKEN_" + start + "short." + start + "abcdefgh.cccccccc",   # part one too short
+                 "auth" + start + "abcdefgh." + start + "short.cccccccc",     # part two too short
+                 "auth" + start + "abcdefgh." + start + "abcdefgh.ccc",       # part three too short
+                 "v1.2.3 release_notes.final.txt"):
+        assert redact_secrets(text) == text, text
+
+
+@pytest.mark.parametrize("unit", ["x" + "e" + "yJ", "_e" + "yJ" + "a" * 8 + ".",
+                                  "Te" + "yJ" + "a" * 8 + ".e" + "yJ" + "b" * 8 + "._",
+                                  "TOKEN_e" + "yJ" + "a" * 7 + ".e" + "yJ" + "b" * 8 + ".c" * 8])
+def test_new2_i3b_mask_stays_linear_on_word_runs(unit):
+    from donediff.redact import redact_secrets
+    text = unit * (1024 * 1024 // len(unit))
+    started = time.perf_counter()
+    redact_secrets(text)
+    assert time.perf_counter() - started < 2.0

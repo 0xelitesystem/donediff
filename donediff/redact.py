@@ -109,8 +109,10 @@ _TOKEN_PREFIX_STRICT = re.compile(r"\b(npm_|hf_)[A-Za-z0-9]{30,}\b")
 _JWT = re.compile(r"(?:(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}|(?<=-)eyJ[A-Za-z0-9_]{8,})"
                   r"\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # A token glued to a "-" whose first part holds a "-" too (NEW2-I-3: a
-# header's base64url often does). One start per run of token characters, so
-# the search stays linear; the token is taken from the run's first "-eyJ".
+# header's base64url often does), or glued to a word or "_" (TOKEN_<token>,
+# auth<token>: NEW2-I-3b, secrets fail closed). One start per run of token
+# characters, so the search stays linear; the token is taken from the run's
+# first "eyJ". Only a JWT-shaped run (".eyJ" part two, a part three) matches.
 _JWT_GLUED = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}"
                         r"\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # A PEM private key: the body between its BEGIN and END lines (or the end).
@@ -299,12 +301,12 @@ def _mask_token(match: re.Match) -> str:
 
 
 def _mask_glued_jwt(match: re.Match) -> str:
-    """Mask from the first "-eyJ" of the first part, when 8 or more token
+    """Mask from the first "eyJ" of the first part, when 8 or more token
     characters follow it; a later one would be shorter."""
     text = match.group()
     head = text[:text.index(".")]
-    start = head.find("-eyJ") + 1
-    if start == 0 or len(head) - start < 11:
+    start = head.find("eyJ")
+    if start < 0 or len(head) - start < 11:
         return text
     return text[:start] + "eyJ" + _MASK
 

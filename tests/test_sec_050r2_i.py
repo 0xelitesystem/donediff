@@ -119,9 +119,14 @@ def test_i4_the_other_starts_are_still_masked(before):
     assert token not in redact_secrets("auth" + before + token)
 
 
-def test_i4_glued_to_a_word_it_stays_part_of_the_word():
+@pytest.mark.parametrize("before", ["auth", "TOKEN_", "x"])
+def test_i4_glued_to_a_word_it_is_masked(before):
+    # Flipped by NEW2-I-3b (CEO ruling, 2026-11-19): a readable token next to a
+    # word is a leak path into reports and CI logs; secrets fail closed.
     token = _made_up_token()
-    assert ("auth" + token) in redact_secrets("auth" + token)
+    shown = redact_secrets(before + token + " end")
+    assert token not in shown and "a" * 10 + "." not in shown
+    assert shown.startswith(before) and shown.endswith(" end")
 
 
 @pytest.mark.parametrize("unit", ["e" + "yJ-", "-e" + "yJaaaaaaaa", "-e" + "yJaaaaaaaa.e" + "yJ"])

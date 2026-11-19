@@ -368,8 +368,9 @@ def test_sec254_a_token_is_still_masked_after_a_word_break():
     token = part + "." + part + "." + "b" * 10  # made up, three dot-joined parts
     for before in (" ", "(", "=", "\"", "\n", ":"):
         assert token not in redact_secrets("auth" + before + token)
-    # Glued to a word, it is part of that word, as with \b before.
-    assert ("auth" + token) in redact_secrets("auth" + token)
+    # Glued to a word it is masked too (flipped by NEW2-I-3b, CEO ruling 2026-11-19:
+    # a readable token next to a word is a leak path; secrets fail closed).
+    assert redact_secrets("auth" + token) == "auth" + "e" + "yJ***"
 
 
 # -- SEC-255: every default-ignorable character, and more look-alikes -----------
