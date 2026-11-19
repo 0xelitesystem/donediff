@@ -50,7 +50,8 @@ from .models import (
 from .parser import epoch
 from .redact import redact_secrets
 from .shell import (
-    base_name, command_words, confined, is_remote_path, named_status, norm_path, program,
+    base_name, command_words, confined, is_remote_path, named_status, norm_path, normalize_stage,
+    program,
     run_directory, split_statements, starts_command, windows_drive,
 )
 
@@ -96,6 +97,7 @@ _VERBATIM_FILTERS = frozenset({"tail", "head", "tee", "less", "more", "cat",
 # Flags that let the check itself pass with nothing run or found: its own
 # output still tells, so a pass marker may lift them.
 _FLAG_MASKS = frozenset({"--passWithNoTests", "--exit-zero"})
+_FILTER_EXTRA = re.compile(r"<|>\(|\s(?:-c|--bytes)(?![A-Za-z-])")
 # Statements that print nothing of their own, so a marker cannot come from them (SEC-250).
 _SILENT = frozenset({"cd", "pushd", "popd", "set", "export", "unset", "source", ".",
                      "set-location", "sl"})
@@ -111,7 +113,12 @@ def _filter_after_check(pipeline: str) -> str | None:
             continue
         for stage in stages[first + 1:]:
             name = program(stage)
-            if name not in _VERBATIM_FILTERS:
+            # A verbatim filter takes no input of its own (`cat <<< x`, `cat - <(..)`,
+            # `tee >(..)`), no byte count (`tail -c`), and (tee aside) no file (SEC-244 leftover).
+            operands = [w for w in command_words(normalize_stage(stage))[1:]
+                        if not w.startswith("-") and not w.lstrip("+").isdigit()]
+            if (name not in _VERBATIM_FILTERS or _FILTER_EXTRA.search(stage)
+                    or (name != "tee" and operands)):
                 return name or "?"
     return None
 

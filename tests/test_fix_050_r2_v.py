@@ -191,3 +191,33 @@ def test_sec250_leftover_a_marker_from_another_statement_is_no_proof(tmp_path, c
 def test_sec250_leftover_silent_statements_still_let_a_marker_verify(tmp_path, command):
     finding, _ = _verdict(tmp_path, command, "12 passed in 0.2s")
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- SEC-244 leftover: a filter is judged by what it is given, not its name -----
+
+@pytest.mark.parametrize("command, output, name", [
+    (_QUIET + " | cat <<< '5 passed'", "5 passed", "cat"),
+    (_QUIET + " | cat - <(echo '5 passed')", "5 passed", "cat"),
+    (_QUIET + " | tee >(echo '5 passed')", "5 passed", "tee"),
+    ("python -m pytest -q 2>&1 | tail -c 18", "5 passed in 0.12s", "tail"),
+    ("python -m pytest -q 2>&1 | head --bytes 40", "5 passed in 0.12s", "head"),
+    ("python -m pytest -q 2>&1 | tail -c18", "5 passed in 0.12s", "tail"),
+    ("python -m pytest -q 2>&1 | cat old-log.txt", "5 passed in 0.12s", "cat"),
+])
+def test_sec244_leftover_a_filter_with_input_of_its_own_or_a_byte_cut_is_no_proof(
+        tmp_path, command, output, name):
+    finding, _ = _verdict(tmp_path, command, output)
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert f"a pipe through `{name}`" in finding.evidence
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q 2>&1 | tail -n 3",
+    "python -m pytest -q 2>&1 | tail --lines=3",
+    "python -m pytest -q 2>&1 | head -n +20",
+    "python -m pytest -q 2>&1 | cat -",
+    "python -m pytest -q | Select-Object -Last 5",
+])
+def test_sec244_leftover_line_cuts_still_verify(tmp_path, command):
+    finding, _ = _verdict(tmp_path, command, "12 passed in 0.2s")
+    assert finding.verdict is Verdict.VERIFIED
