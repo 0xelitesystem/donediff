@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 from .models import ClaimType
-from .shell import normalize_stage, program, split_statements, wrapper_inner
+from .shell import command_words, normalize_stage, program, split_statements, wrapper_inner
 
 COMMAND_EVIDENCE: dict[ClaimType, re.Pattern] = {
     ClaimType.TESTS_PASS: re.compile(
@@ -507,19 +507,104 @@ def _exits_zero(text: str) -> bool:
     return False
 
 
-# A trap whose handler exits 0 makes the call exit 0 whatever the check
-# returned (SEC-251): bash `trap 'exit 0' EXIT` (or 0) wherever it stands, ERR
-# or DEBUG when set before the check, and PowerShell's `trap { exit 0 }`, which
-# covers its whole scope. A computed code (`exit $rc`) may keep the status.
-# The handler may be $'..' or carry `\ ` escapes (SEC-251 leftover).
-_TRAP_BASH = re.compile(r"^trap\s+(?:--\s+)?(\$'(?:[^'\\]|\\.)*'|'[^']*'|\"(?:[^\"\\]|\\.)*\""
-                        r"|(?:[^\s'\"{\\]|\\.)+)\s+(.+)$", re.IGNORECASE | re.DOTALL)
-# A trap set after builtin, command, eval (quoted too), then, do, else, `{` or
-# `(`, not only at a statement start (SEC-251 leftover). `echo "trap ..."` is not one.
-_TRAP_START = re.compile(
-    r"(?:^|[;{(!&]|\b(?:then|do|else|builtin|command)\s|\beval\s+[\"']?)\s*(trap)(?![\w-])",
-    re.IGNORECASE)
+# A trap whose handler is not provably status-keeping makes the call exit
+# with whatever the handler says, whatever the check returned (SEC-251,
+# SEC-291, fail closed): bash `trap 'exit 0' EXIT` (or 0) wherever it stands,
+# ERR or DEBUG when set before the check, and PowerShell's `trap { exit 0 }`,
+# which covers its whole scope.
+_SHELL_WORD = re.compile(r"""(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|\\.|[^\s"'\\])+""")
+# Words after which the next word is still in command position.
+_CMD_PREFIX = frozenset({"then", "do", "else", "elif", "time", "builtin", "command", "exec",
+                         "nohup", "env", "sudo", "nice", "!", "{", "(", ""})
+_ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=")
 _FUNC_DEF = re.compile(r"(?:^|[\s;{])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)")
+
+
+def _dequote(word: str) -> str:
+    """A word as bash runs it: quotes and backslashes dropped (`\\trap`, `'trap'`, `tr''ap`)."""
+    return re.sub(r"\$(?=')|[\"'\\]", "", word)
+
+
+def _commands(text: str):
+    """(word, raw word, text after it) for each word of `text` in command
+    position, quotes and backslashes dropped: at the start, after `(`, `{` or
+    a case pattern `x)`, and after words that only start the next one (then,
+    time, builtin, command, an assignment, an option of those)."""
+    at_cmd = True
+    for match in _SHELL_WORD.finditer(text):
+        raw = match.group()
+        core = raw.lstrip("({!&")
+        word = _dequote(core)
+        if at_cmd or core != raw:
+            yield word, core, text[match.end():]
+            at_cmd = (word.lower() in _CMD_PREFIX or bool(_ASSIGN_WORD.match(core))
+                      or word.startswith("-"))
+        else:
+            at_cmd = False
+        if raw.endswith(("(", ")", "{")):
+            at_cmd = True
+
+
+def _trap_text(text: str, _depth: int = 0) -> str | None:
+    """`trap ...` from the first trap in command position in `text` (also
+    `\\trap`, `'trap'`, `x=1 trap`, `case x in x) trap`, and inside `eval`),
+    else None (SEC-291)."""
+    for word, _, rest in _commands(text):
+        low = word.lower()
+        if low == "trap":
+            return "trap" + rest
+        if low == "eval" and _depth < 2:
+            inner = " ".join(command_words(rest))
+            for st in split_statements(inner):
+                found = _trap_text(_text(st), _depth + 1)
+                if found:
+                    return found
+            return None
+    return None
+
+
+_STATUS_WORDS = frozenset({"$?", "${?}", "$LASTEXITCODE", "${LASTEXITCODE}"})
+
+
+def _handler_keeps(handler: str, literal: bool, funcs: set[str]) -> bool:
+    """True only when a bash trap handler provably keeps the check's status
+    (fail closed, SEC-291): every exit in it has a failing literal code, or is
+    bare or `exit $?` as its first command, or `exit $rc` after `rc=$?` as its
+    first command with rc never set again. `$?` read later is another
+    command's 0; in a handler that is not single-quoted it is expanded when
+    the trap is set. Nothing in it may run text or a function the engine
+    cannot read (`$t`, eval, source, exec, a function of the call)."""
+    statements = [_text(st) for st in split_statements(handler) if any(st.stages)]
+    saved = None
+    first = re.fullmatch(r"\s*([A-Za-z_]\w*)=(\"?)\$\{?\?\}?\2\s*", statements[0]) \
+        if statements else None
+    if first and literal:
+        name = first.group(1)
+        rest = re.sub(r"\$(?:" + name + r"\b|\{" + name + r"\})", " ", handler)
+        if len(re.findall(r"(?<![\w$])" + name + r"\b", rest)) == 1:
+            saved = name
+    for k, text in enumerate(statements):
+        for word, _, rest in _commands(text):
+            low = word.lower()
+            if low.startswith("$") or "`" in low or low in ("eval", "source", ".", "exec", "trap") \
+                    or word in funcs:
+                return False
+            if low not in ("exit", "return", "logout"):
+                continue
+            args = command_words(rest)
+            code = args[0] if args else ""
+            code = code if code.startswith("${") else code.rstrip(";)}")
+            if not code:
+                ok = k == 0
+            elif re.fullmatch(r"-?\d+", code):
+                ok = exit_literal_fails(code)
+            elif code in _STATUS_WORDS:
+                ok = literal and k == 0
+            else:
+                ok = saved is not None and code in ("$" + saved, "${" + saved + "}")
+            if not ok:
+                return False
+    return True
 _TRAP_PS = re.compile(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{(.*)\}\s*$", re.IGNORECASE | re.DOTALL)
 _TRAP_ANYWHERE = frozenset({"exit", "sigexit", "0"})
 _TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
@@ -528,10 +613,10 @@ _TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
 def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     """"anywhere" or "before" for a trap at statement `pos` whose handler exits
     0 (see above), else None. A PowerShell block cut at `;` is joined back."""
-    start = _TRAP_START.search(texts[pos])
-    if start is None:
+    text = _trap_text(texts[pos])
+    if text is None:
         return None
-    text = texts[pos][start.start(1):].strip()
+    text = text.strip()
     block = text
     if re.match(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{", text, re.IGNORECASE) and "}" not in text:
         end = pos
@@ -541,22 +626,23 @@ def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     match = _TRAP_PS.match(block)
     if match:
         return "anywhere" if _exits_zero(match.group(1)) else None
-    match = _TRAP_BASH.match(text)
-    if match is None:
-        return None
-    sigs = {s.lower().strip("\"';") for s in match.group(2).split()}
+    words = _SHELL_WORD.findall(text)[1:]
+    if words[:1] == ["--"]:
+        words = words[1:]
+    if len(words) < 2 or words[0].startswith("-"):
+        return None  # trap -p, trap -l, trap - EXIT: nothing set
+    sigs = {s.lower().strip("\"';") for s in words[1:]}
     reach = "anywhere" if sigs & _TRAP_ANYWHERE else "before" if sigs & _TRAP_BEFORE else None
-    handler = match.group(1)
-    if handler[:2] == "$'":
-        handler = handler[2:-1]
-    elif handler[:1] in ("'", '"'):
-        handler = handler[1:-1]
-    else:
-        handler = re.sub(r"\\(.)", r"\1", handler)
+    handler, literal = words[0], False
+    if re.fullmatch(r"\$?'[^']*'", handler):
+        handler, literal = handler[handler.index("'") + 1:-1], True
+    elif re.fullmatch(r"\"(?:[^\"\\]|\\.)*\"", handler):
+        handler = re.sub(r"\\([\"\\$`])", r"\1", handler[1:-1])
+    else:  # unquoted or mixed (`exit\ 0`, `'exit '$?`): expanded when the trap is set
+        handler = re.sub(r"\\(.)|[\"']", lambda m: m.group(1) or "", handler)
     # A handler that calls a function defined in the call may exit 0 there.
     funcs = {m.group(1) for t in texts for m in _FUNC_DEF.finditer(t)}
-    called = set(handler.split()[:1])
-    return reach if reach and (_exits_zero(handler) or bool(called & funcs)) else None
+    return reach if reach and not _handler_keeps(handler, literal, funcs) else None
 
 
 def zero_exit_trap(command: str, _depth: int = 0) -> str | None:
@@ -572,8 +658,7 @@ def zero_exit_trap(command: str, _depth: int = 0) -> str | None:
             if found:
                 return found
         if _zero_exit_trap(texts, pos):
-            start = _TRAP_START.search(texts[pos])
-            return texts[pos][start.start(1) if start else 0:].strip()[:60]
+            return (_trap_text(texts[pos]) or texts[pos]).strip()[:60]
     return None
 
 
