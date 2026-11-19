@@ -10,7 +10,7 @@ import importlib.util
 import tracemalloc
 from pathlib import Path
 
-from donediff.models import OTHER
+from donediff.models import OTHER, Verdict
 from donediff.readers import GEMINI, QWEN
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,3 +84,52 @@ def test_qa029_gemini_peak_stays_flat_as_padded_calls_grow(tmp_path):
 
 def test_qa029_qwen_peak_stays_flat_as_padded_calls_grow(tmp_path):
     _flat(QWEN, _qwen_session, tmp_path)
+
+
+# -- QA-031: a successful MultiEdit backs an edit claim, like Edit ------------------
+
+def _file_claim(tmp_path, tool, tool_input, result="ok", is_error=False,
+                text="I edited `app.py`."):
+    from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
+    from donediff.claims import extract_claims
+    from donediff.models import ClaimType
+    from donediff.parser import parse_transcript
+    from donediff.verify import verify_claims
+
+    records = [assistant_tool("t1", tool, tool_input),
+               tool_result("t1", result, is_error=is_error),
+               assistant_text(text)]
+    session = parse_transcript(write_jsonl(tmp_path / f"{tool}.jsonl", records))
+    findings = [f for f in verify_claims(session, extract_claims(session), check_disk=False)
+                if f.claim.type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED)]
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
+_PAIR = {"old_string": "a = 1", "new_string": "a = 2"}
+
+
+def test_qa031_multiedit_backs_an_edit_claim(tmp_path):
+    finding = _file_claim(tmp_path, "MultiEdit",
+                          {"file_path": "/home/dev/app/app.py", "edits": [_PAIR]})
+    assert finding.verdict is Verdict.VERIFIED, finding.evidence
+    assert "MultiEdit call for `app.py` found" in finding.evidence
+
+
+def test_qa031_edit_control_still_verified(tmp_path):
+    finding = _file_claim(tmp_path, "Edit", {"file_path": "/home/dev/app/app.py", **_PAIR})
+    assert finding.verdict is Verdict.VERIFIED, finding.evidence
+
+
+def test_qa031_failed_multiedit_backs_nothing(tmp_path):
+    finding = _file_claim(tmp_path, "MultiEdit",
+                          {"file_path": "/home/dev/app/app.py", "edits": [_PAIR]},
+                          result="String to replace not found in file.", is_error=True)
+    assert finding.verdict is Verdict.UNVERIFIED, finding.evidence
+    assert "MultiEdit call for `app.py` did not succeed" in finding.evidence
+
+
+def test_qa031_multiedit_to_another_file_backs_nothing(tmp_path):
+    finding = _file_claim(tmp_path, "MultiEdit",
+                          {"file_path": "/home/dev/app/other.py", "edits": [_PAIR]})
+    assert finding.verdict is Verdict.UNVERIFIED, finding.evidence

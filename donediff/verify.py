@@ -45,7 +45,7 @@ from .evidence import (
 )
 from .gitstate import GitError, GitRepo
 from .models import (
-    EDIT, NOTEBOOK_EDIT, WRITE, Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
+    EDIT, MULTI_EDIT, NOTEBOOK_EDIT, WRITE, Claim, ClaimType, Event, EventKind, Finding, Session, Source, Verdict,
 )
 from .parser import epoch
 from .redact import redact_secrets
@@ -607,7 +607,7 @@ def _matching_writes(timeline: Timeline, claim: Claim, ctx: _Context) -> list[Ev
     cwd = timeline.session.cwd
     return [
         e for e in timeline.writes_before(ctx.key, ctx.restrict)
-        if e.tool_action in (WRITE, EDIT, NOTEBOOK_EDIT)
+        if e.tool_action in (WRITE, EDIT, MULTI_EDIT, NOTEBOOK_EDIT)  # MultiEdit: QA-031
         and _same_claimed_file(e.file_path, e.cwd or cwd, claim.detail, cwd)
     ]
 
