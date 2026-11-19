@@ -207,3 +207,33 @@ def test_named_status_keeps_the_plain_wrapper_form():
     assert named_status("echo x | xargs sh -c 'python hello.py'", target) is None
     assert named_status("timeout 60 bash -c 'python hello.py'", target) is None
     assert named_status("bash -c 'python hello.py'", target) == (True, True, "")
+
+
+# -- SEC-252: an exit literal reads as the shell reads it ----------------------
+
+@pytest.mark.parametrize("code", [str(2 ** 60), str(2 ** 62), "-" + str(2 ** 63), "0" * 30 + str(2 ** 60)])
+def test_sec252_a_19_digit_exit_that_is_0_mod_256_swallows_the_failure(tmp_path, code):
+    command = _QUIET + " || exit " + code
+    assert "swallowed_failure" in _kinds(command)
+    result = audit(_one_run(tmp_path, command, ""))
+    assert result.findings[0].verdict is Verdict.UNVERIFIED
+    assert "swallowed_failure" in {s.kind for s in result.gaming_signals}
+
+
+@pytest.mark.parametrize("code", [str(2 ** 60 + 1), str(2 ** 63), "-" + str(2 ** 63 + 256),
+                                  "9" * 20, "1" + "0" * 5000])
+def test_sec252_other_long_exits_still_fail(code):
+    # 2^60 + 1 exits 1; 2^63 and beyond are outside bash's range: it refuses the number.
+    assert _kinds(_QUIET + " || exit " + code) == []
+
+
+def test_sec252_exit_literal_rule():
+    from donediff.evidence import exit_literal_fails
+    assert not exit_literal_fails("0") and not exit_literal_fails("256") and not exit_literal_fails("-256")
+    assert not exit_literal_fails(str(2 ** 63 - 256)) and not exit_literal_fails("-" + str(2 ** 63))
+    assert exit_literal_fails("1") and exit_literal_fails("-1") and exit_literal_fails(str(2 ** 63 - 1))
+    assert exit_literal_fails(str(2 ** 63)) and exit_literal_fails("1" + "0" * 19)
+
+
+def test_sec252_a_trap_exit_of_2_pow_60_swallows_too():
+    assert "swallowed_failure" in _kinds("trap 'exit " + str(2 ** 60) + "' EXIT; " + _QUIET)

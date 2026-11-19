@@ -126,6 +126,23 @@ def log_int(text: str, overlong: int | None = None) -> int | None:
     return sign * int(digits)
 
 
+_INTMAX = 2 ** 63  # bash reads an exit or return code as intmax_t
+
+
+def exit_literal_fails(code: str) -> bool:
+    """True when `exit <code>` (or return) with this literal fails, read the
+    way bash reads it (SEC-252): sign and leading zeros dropped, up to 19
+    digits parsed, and a value inside [-2^63, 2^63 - 1] fails when it is not
+    0 mod 256 (bash exits n & 255). Longer or outside that range: bash
+    refuses the number, a failure. `exit 1152921504606846976` (2^60) exits 0."""
+    sign = -1 if code.startswith("-") else 1
+    digits = code.lstrip("-").lstrip("0") or "0"
+    if len(digits) > 19:
+        return True
+    value = sign * int(digits)
+    return not -_INTMAX <= value < _INTMAX or value % 256 != 0
+
+
 # What a runner prints when it ran no test at all (SEC-222).
 _RAN_NOTHING = re.compile(
     r"\bno tests ran\b|\bcollected 0 items\b|^Ran 0 tests\b|\bTests are skipped\b"
@@ -310,7 +327,7 @@ def _failing_stage(stage: str) -> bool:
         return False
     code = match.group(1)
     return code is None or (re.fullmatch(r"-?\d+", code) is not None
-                            and log_int(code, 1) % 256 != 0)  # overlong: fails (SEC-228)
+                            and exit_literal_fails(code))
 
 
 def _fails_again(statements) -> bool:
@@ -358,7 +375,7 @@ def _fails_in(text: str) -> bool:
         if match.group(2):
             return True
         code = match.group(1)
-        if code is None or (re.fullmatch(r"-?\d+", code) and log_int(code, 1) % 256 != 0):
+        if code is None or (re.fullmatch(r"-?\d+", code) and exit_literal_fails(code)):
             return True
     return False
 
@@ -367,7 +384,7 @@ def _exits_zero(text: str) -> bool:
     """True when `text` runs exit or return with a literal code that is 0 mod 256."""
     for match in _EXIT_IN_TEXT.finditer(_QUOTED_TEXT.sub(" ", text)):
         code = match.group(1)
-        if code is not None and re.fullmatch(r"-?\d+", code) and log_int(code, 1) % 256 == 0:
+        if code is not None and re.fullmatch(r"-?\d+", code) and not exit_literal_fails(code):
             return True
     return False
 
