@@ -34,6 +34,17 @@ _PATH = (r"(?:`([^`\s]+)`"
 # and the target is a local path, not a URL (see _link_file).
 _MD_FILE_LINK = r"\[`?([^\]\s`]+\.[A-Za-z0-9]{1,10})`?\]\(([^)\s]+)\)"
 _URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:(?![\\/])|[A-Za-z][A-Za-z0-9+.-]+:[\\/]{2}")
+# A file named bare, with an extension that starts with a letter (hello.py,
+# src/app.py): not inside a URL or a longer path, not a version (1.2). Read
+# only by the file-created phrasings; a web domain (example.com) is no file
+# (_bare_file).
+_BARE_FILE = (r"(?<![\w.\\/:@-])((?:[\w-]+[\\/])*[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,9})"
+              r"(?![\w\\/@-]|\.\w)")
+_WEB_TLDS = frozenset({"com", "org", "net", "io", "ai", "dev", "app", "co", "edu", "gov",
+                       "info", "biz", "us", "uk"})
+# The file a file-created phrasing names: in backticks, as a markdown link,
+# or bare. Groups: backticked name, link text, link target, bare name.
+_CREATED_FILE = (r"(?:`([^`\s]+\.[A-Za-z0-9]{1,10})`|" + _MD_FILE_LINK + r"|" + _BARE_FILE + r")")
 
 # The claim-word table: every phrasing donediff reads as a claim, in one
 # place, tried in order. Each phrasing here has a test in test_claims.py.
@@ -70,7 +81,14 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     )),
     (ClaimType.FILE_CREATED, re.compile(
         r"\bcreated\s+(?:the\s+(?:file\s+)?|a\s+(?:new\s+)?(?:file\s+)?|file\s+)?"
-        r"(?:`([^`\s]+\.[A-Za-z0-9]{1,10})`|" + _MD_FILE_LINK + r")",
+        + _CREATED_FILE,
+        re.IGNORECASE,
+    )),
+    # The passive form: "`hello.py` was successfully created", "hello.py was
+    # written". "added to" (put into something) is no creation.
+    (ClaimType.FILE_CREATED, re.compile(
+        _CREATED_FILE + r"\s+(?:was|were|has\s+been|have\s+been)\s+(?:successfully\s+)?"
+        r"(?:created|written|added(?!\s+to\b))\b",
         re.IGNORECASE,
     )),
     (ClaimType.FILE_EDITED, re.compile(
@@ -121,7 +139,10 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
     # printed `hello` and exited with code 0") and a question are no claim.
     (ClaimType.COMMAND_OK, re.compile(
         r"`([^`\n]{1,200})`(?:\s+(?:script|command|program))?\s+"
-        r"(?:worked|ran\s+successfully|exited\s+with\s+code\s+0)\b(?!.*\?\s*$)",
+        r"(?:worked|ran\s+successfully|exited\s+with\s+code\s+0|ran\s+without\s+(?:any\s+)?errors?"
+        # passive: "`hello.py` was (successfully) executed", "... created and executed"
+        r"|(?:was|has\s+been)\s+(?:successfully\s+)?(?:created\s+and\s+)?(?:successfully\s+)?executed)"
+        r"\b(?!.*\?\s*$)",
         re.IGNORECASE,
     )),
 ]
@@ -235,7 +256,12 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
     if claim_type is ClaimType.COMMIT_ID:
         # A digit sets an id apart from a hex-letter word ("defaced").
         return groups[0].lower() if any(c.isdigit() for c in groups[0]) else None
-    if claim_type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED) and match.group(1) is None:
+    if claim_type is ClaimType.FILE_CREATED:
+        code, text, target, bare = match.groups()[:4]
+        if code is not None:
+            return code
+        return _link_file(text, target) if text is not None else _bare_file(bare)
+    if claim_type is ClaimType.FILE_EDITED and match.group(1) is None:
         return _link_file(match.group(2), match.group(3))
     if claim_type is ClaimType.COMMAND_OK:
         return match.group(1).strip() or None
@@ -244,6 +270,13 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
 
 def _base(path: str) -> str:
     return re.split(r"[\\/]", path)[-1]
+
+
+def _bare_file(name: str | None) -> str | None:
+    """A bare file name, or None for a web domain (example.com)."""
+    if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS:
+        return None
+    return name
 
 
 def _link_file(text: str, target: str) -> str | None:

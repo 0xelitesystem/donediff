@@ -459,6 +459,56 @@ def test_sec259_json_source_fields_show_the_home_folder_as_tilde():
     assert full["claims"][0]["evidence_source"] == label and full["gaming_signals"][0]["source"] == label
 
 
+# -- Passive file and run claims (CEO 2026-11-19, qwen3:8b trial) ---------------
+
+def _claims_of(sentence):
+    from donediff.claims import _sentence_claims
+    return sorted((c.type.value, c.detail) for c in _sentence_claims(sentence, 0))
+
+
+def _claims_of_text(text):
+    from donediff.claims import extract_claims
+    from donediff.models import Event, EventKind, Session
+    session = Session(path="t.jsonl", events=[Event(kind=EventKind.TEXT, index=0, text=text)])
+    return sorted((c.type.value, c.detail) for c in extract_claims(session))
+
+
+@pytest.mark.parametrize("text, wanted", [
+    ("The file `hello.py` was successfully created and executed.",
+     [("command_ok", "hello.py"), ("file_created", "hello.py")]),
+    ("The script ran without errors.", []),  # no name: no claim (command_ok needs a backticked name)
+    ("I created hello.py and ran it with python.", [("file_created", "hello.py")]),
+    ("hello.py was created.", [("file_created", "hello.py")]),
+    ("src/app.py was written.", [("file_created", "src/app.py")]),
+    ("The files `a.py` and `b.py` were added.", [("file_created", "b.py")]),
+    ("I created src/app.py.", [("file_created", "src/app.py")]),
+    ("`python hello.py` ran without errors.", [("command_ok", "python hello.py")]),
+    ("`hello.py` was executed.", [("command_ok", "hello.py")]),
+])
+def test_passive_and_bare_file_claims(text, wanted):
+    assert _claims_of_text(text) == wanted
+
+
+@pytest.mark.parametrize("text", [
+    "hello.py was not created.", "hello.py will be created.", "If hello.py was created, run it.",
+    "The file was created earlier by the user.", "Version 1.2 was released.", "e.g. was created by hand.",
+    "example.com was created.", "https://example.com/app.py was created.", "Node.js was updated.",
+    "The script ran without errors.", "README.md was added to the index.", "I created a new file.",
+])
+def test_passive_claim_negative_controls(text):
+    assert _claims_of_text(text) == []
+
+
+def test_passive_file_claim_verifies_against_the_write(tmp_path):
+    path = write_jsonl(tmp_path / "p.jsonl", [
+        assistant_tool("t1", "Write", {"file_path": "C:\\fake\\project\\hello.py", "content": "print(1)\n"}),
+        tool_result("t1", "File created successfully"),
+        assistant_text("hello.py was created."),
+    ])
+    (finding,) = audit(path).findings
+    assert finding.verdict is Verdict.VERIFIED
+
+
 def _suffix_session(tmp_path, written):
     records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
                tool_result("t1", "File created successfully"),

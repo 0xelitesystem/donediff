@@ -11,15 +11,27 @@
     "bytes": 0,
     "seconds": 0.0
   },
-  "score": 4,
+  "score": 16,
   "grade": "F",
   "counts": {
-    "verified": 1,
+    "verified": 2,
     "stale": 1,
     "unverified": 0,
     "contradicted": 1
   },
   "claims": [
+    {
+      "type": "file_created",
+      "quote": "Created cache.py.",
+      "sentence": "Created cache.py.",
+      "detail": "cache.py",
+      "verdict": "verified",
+      "evidence": "Write call for `cache.py` found [in main]",
+      "claim_event": 9,
+      "evidence_event": 2,
+      "evidence_source": "main",
+      "relayed": false
+    },
     {
       "type": "tests_pass",
       "quote": "All tests pass.",
