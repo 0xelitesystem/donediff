@@ -88,3 +88,41 @@ def test_v2_a_command_claim_after_a_zero_exit_trap_is_unverified(tmp_path, comma
 def test_v2_a_command_claim_without_a_zero_exit_trap_still_verifies(tmp_path, command):
     finding, _ = _verdict(tmp_path, command, claim=_WORKED)
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- V-3: the status-kept reader -------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    _QUIET + "; [ $? -ne 0 ] && exit",
+    _QUIET + "; if [ $? -ne 0 ]; then exit; fi",
+    _QUIET + "; if [ $? -ne 0 ]; then exit \"0\"; fi",
+    _QUIET + "; rc=$?; rc=0; exit $rc",
+    _QUIET + "; rc=$?; unset rc; exit $rc",
+    _QUIET + "; rc=$?; exit $RC",
+    _QUIET + "; rc=$?; exit ${rc:+0}",
+    _QUIET + "; [ $? -eq 1 ] || exit 1",
+    _QUIET + "; [ $? -ne 0 ] || exit 1",
+    _QUIET + "; if [ $? -eq 0 ]; then exit 1; fi",
+])
+def test_v3_a_status_test_that_exits_zero_on_failure_keeps_nothing(tmp_path, command):
+    assert _kinds(command)
+    finding, _ = _verdict(tmp_path, command)
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("command", [
+    _QUIET + "; [ $? -ne 0 ] && exit 1",
+    _QUIET + "; [ \"$?\" != 0 ] && exit 2",
+    _QUIET + "; [ $? -eq 0 ] || exit",
+    _QUIET + "; [ $? -eq 0 ] || exit 1",
+    _QUIET + "; [ $? -ne 0 ] && { echo failed; exit 1; }",
+    _QUIET + "; [ $? -ne 0 ] && echo failed && exit 1",
+    _QUIET + "; if [ $? -ne 0 ]; then echo failed; exit 1; fi",
+    _QUIET + "; if [ $? -eq 0 ]; then echo ok; else exit 1; fi",
+    _QUIET + "; rc=$?; exit $rc",
+    _QUIET + "; rc=$?; exit \"${rc}\"",
+    "python -m pytest -q; if ($LASTEXITCODE -ne 0) { exit 1 }",
+    "python -m pytest -q; if (-not $?) { exit 1 }",
+])
+def test_v3_a_status_test_that_exits_with_a_failure_keeps_the_status(command):
+    assert _kinds(command) == []

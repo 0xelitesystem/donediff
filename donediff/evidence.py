@@ -371,19 +371,75 @@ def _fails_again(statements) -> bool:
     return False
 
 
-def _status_kept(after: list[str]) -> bool:
-    """True when the statements after a check exit with its status."""
+def _status_kept(after: list[str], ops: list[str] | None = None) -> bool:
+    """True when the statements after a check exit with its status. `ops` are
+    the operators that follow each statement (`&&`, `||`, `;` ...)."""
+    ops = ops or [""] * len(after)
     saved: set[str] = set()
     for i, text in enumerate(after):
         if _STATUS_EXIT.search(text):
             return True
-        saved.update(m.group(1).lower() for m in _STATUS_SAVED.finditer(text))
+        # Bash names are case-sensitive; `rc=0` or `unset rc` drops a saved status (V-3).
+        saved -= {n for n in saved if re.search(
+            r"(?:^|[\s;])(?:" + re.escape(n) + r"=(?!\"?\$\{?(?:\?|PIPESTATUS))|unset\s+"
+            + re.escape(n) + r"\b)", text)}
+        saved.update(m.group(1) for m in _STATUS_SAVED.finditer(text))
         for name in saved:
-            if re.search(r"\bexit\s+\"?\$\{?" + re.escape(name) + r"\b", text, re.IGNORECASE):
+            if re.search(r"\bexit\s+\"?\$(?:" + re.escape(name) + r"|\{" + re.escape(name)
+                         + r"\})\"?(?=[\s;)}]|$)", text):
                 return True
-        if _STATUS_REF.search(text) and any(_fails_in(t) for t in after[i:]):
+        if _STATUS_REF.search(text) and _test_exits_on_failure(after, ops, i):
             return True
     return False
+
+
+# The status compared with a literal: `[ $? -ne 0 ]`, `if ($LASTEXITCODE -ne 0)` (V-3).
+_STATUS_TEST = re.compile(
+    r"\$\{?(?:\?|PIPESTATUS\[\d+\]|LASTEXITCODE)\}?[\"']?\s*(-eq|-ne|-gt|-lt|-ge|-le|==|!=|=)"
+    r"\s*[\"']?(-?\d+)\b", re.IGNORECASE)
+_ELSE = re.compile(r"(?:^|[\s;}])(?:else|elif)\b", re.IGNORECASE)
+_GROUP_CLOSER = {"{": "}", "(": ")"}
+
+
+def _test_exits_on_failure(after: list[str], ops: list[str], i: int) -> bool:
+    """True when the status test at after[i] runs a failing exit when the check
+    failed. Only `$?` compared with 0 is read: `-ne|!=|-gt 0` then `&&` or
+    `then` exit N, `-eq|==|= 0` then `||` or `else` exit N. A test of another
+    value (`[ $? -eq 1 ] || exit 1`) keeps nothing. With no comparison
+    (`if (-not $?) { exit 1 }`), any failing exit after it counts."""
+    text = after[i]
+    test = _STATUS_TEST.search(text)
+    if test is None:
+        return any(_fails_in(t) for t in after[i:])
+    op, value = test.group(1).lower(), test.group(2)
+    if int(value) != 0 or op in ("-lt", "-ge", "-le"):
+        return False
+    on_true = op in ("-ne", "!=", "-gt")
+    parts = _ELSE.split(text[test.end():], maxsplit=1)
+    branches: dict[bool, list[tuple[str, bool]]] = {True: [(parts[0], False)], False: []}
+    if len(parts) > 1:
+        branches[False].append((parts[1], False))
+    if re.match(r"\s*(?:if|elif)\b", text, re.IGNORECASE) and not re.search(r"(?<!\$)\{", text):
+        side = True  # bash if: the then branch runs to else/elif/fi
+        for later in after[i + 1:]:
+            word = later.strip().split(" ", 1)[0].lower()
+            if word in ("fi", "fi;"):
+                break
+            if word in ("else", "elif"):
+                side = False
+            branches[side].append((later, False))
+    elif ops[i] in ("&&", "||"):
+        side, j = ops[i] == "&&", i + 1
+        closer = _GROUP_CLOSER.get(after[j].lstrip()[:1]) if j < len(after) else None
+        while j < len(after):
+            branches[side].append((after[j], ops[i] == "||" and j == i + 1))
+            if closer:
+                if after[j].rstrip().endswith(closer):
+                    break
+            elif ops[j] != "&&":
+                break
+            j += 1
+    return any(_fails_in(t, after_or) for t, after_or in branches[on_true])
 
 
 # exit/return/throw/false in command position (after ; { ( & | then else do
@@ -395,13 +451,23 @@ _EXIT_IN_TEXT = re.compile(
 _QUOTED_TEXT = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'")
 
 
-def _fails_in(text: str) -> bool:
-    """True when `text` runs a failing exit (inside an if block too)."""
-    for match in _EXIT_IN_TEXT.finditer(_QUOTED_TEXT.sub(" ", text)):
+# `exit "0"` is `exit 0`: unquote a quoted literal code before quotes are blanked (V-3).
+_QUOTED_CODE = re.compile(r"(\b(?:exit|return)\s+(?:/b\s+)?)([\"'])(-?\d+)\2", re.IGNORECASE)
+
+
+def _fails_in(text: str, after_or: bool = False) -> bool:
+    """True when `text` runs a failing exit (inside an if block too). A bare
+    exit returns the status of the test before it, so it fails only as the
+    first command after `||` (`after_or`)."""
+    blank = _QUOTED_TEXT.sub(" ", _QUOTED_CODE.sub(r"\1\3", text))
+    for match in _EXIT_IN_TEXT.finditer(blank):
         if match.group(2):
             return True
         code = match.group(1)
-        if code is None or (re.fullmatch(r"-?\d+", code) and exit_literal_fails(code)):
+        if code is None:
+            if after_or and match.start() == 0:
+                return True
+        elif re.fullmatch(r"-?\d+", code) and exit_literal_fails(code):
             return True
     return False
 
@@ -526,7 +592,7 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
         before, after = norms[:pos], texts[pos + 1:]
         pipefail = any(_PIPEFAIL_ON.match(n) for n in before)
         errexit = any(_ERREXIT_ON.match(n) for n in before)
-        read_after = _status_kept(after)
+        read_after = _status_kept(after, [st.op for st in statements[pos + 1:]])
         prev_op = statements[pos - 1].op if pos else ""
         if prev_op == "||" and _has_check(chain):
             # Everything from here to the end of the &&/|| chain runs only
