@@ -686,10 +686,44 @@ def test_ids_from_outside_never_reach_git_as_options(tmp_path, monkeypatch):
         assert found.has_commit(sha[:8])
         assert found.remote_branches_containing(sha) == ["origin/main"]
         assert found.remote_refs() == ["origin/main"]
-    show, cat_file, contains = calls[0], calls[1], calls[2]
+    # SEC-256: has_commit and --contains first resolve the id with rev-parse.
+    show, resolve, resolve_full, contains = calls[0], calls[1], calls[2], calls[3]
     assert show[-2:] == ["--end-of-options", sha]
-    assert cat_file[-2:] == ["--end-of-options", f"{sha[:8]}^{{commit}}"]
+    assert resolve[-2:] == ["--end-of-options", f"{sha[:8]}^{{commit}}"]
+    assert resolve_full[-2:] == ["--end-of-options", f"{sha}^{{commit}}"]
     assert contains[-1] == f"--contains={sha}"
+
+
+@needs_git
+def test_sec256_a_ref_named_like_an_id_is_no_commit_id(tmp_path):
+    """A tag `deadbee` or a 64-hex branch in a SHA-1 repo names another commit:
+    the id it resolves to does not start with the claimed digits."""
+    repo = make_repo(tmp_path)
+    first = git(repo, "rev-parse", "HEAD")
+    head = commit_file(repo, "src/a.py", "Add a")
+    fake7, fake64 = "deadbee", "e" * 64
+    assert not first.startswith(fake7) and not head.startswith(fake7)
+    git(repo, "tag", fake7, first)
+    git(repo, "branch", fake64, head)
+    git(repo, "update-ref", "refs/remotes/origin/main", head)
+    with gitstate.GitRepo(str(repo)) as found:
+        assert not found.has_commit(fake7) and not found.has_commit(fake64)
+        assert found.remote_branches_containing(fake7) == []
+        assert found.has_commit(head[:7]) and found.has_commit(head.upper()[:12])
+        assert found.remote_branches_containing(head[:9]) == ["origin/main"]
+
+
+@needs_git
+def test_sec256_a_made_up_id_shadowed_by_a_tag_is_not_verified(tmp_path):
+    repo = make_repo(tmp_path)
+    first = git(repo, "rev-parse", "HEAD")
+    commit_file(repo, "src/a.py", "Add a")
+    head = git(repo, "rev-parse", "HEAD")
+    assert not first.startswith("dead123") and not head.startswith("dead123")
+    git(repo, "tag", "dead123", head)
+    finding = one(audit(tmp_path, repo, [assistant_text("Committed as dead123.")]),
+                  ClaimType.COMMIT_ID)
+    assert finding.verdict is not Verdict.VERIFIED
 
 
 def _plant_git(folder: Path) -> Path:

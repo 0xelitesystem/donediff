@@ -281,7 +281,8 @@ def test_files_in_puts_end_of_options_before_the_commit(tmp_path, monkeypatch):
         assert found.files_in(gitstate.Commit(sha, 0.0, "Initial")) == {"README.md"}
         found.has_commit(sha[:8])
         found.commits_between(0, 2 ** 31)
-    shows = [a for a in calls if "show" in a or "cat-file" in a or "log" in a]
+    # has_commit resolves the id with rev-parse since SEC-256 (was cat-file).
+    shows = [a for a in calls if "show" in a or "log" in a or a[-1] == f"{sha[:8]}^{{commit}}"]
     assert len(shows) == 3
     for argv in shows:
         assert argv[-2] == "--end-of-options", argv

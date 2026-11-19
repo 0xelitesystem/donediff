@@ -579,19 +579,31 @@ class GitRepo:
             self._remote_refs = _ref_names(out)
         return self._remote_refs
 
+    def _commit_id(self, sha: str) -> str | None:
+        """The full id of the commit `sha` is a prefix of, else None (SEC-256).
+
+        git resolves a ref before an id, so a tag or branch named like an id
+        (`deadbee`, 64 hex digits in a SHA-1 repo) names some other commit:
+        the id git gives back must start with the claimed digits."""
+        if not _HEX_ID.fullmatch(sha):
+            return None
+        code, out = self._run(["rev-parse", "--verify", "--quiet", "--end-of-options",
+                               f"{sha}^{{commit}}"], check=False)
+        full = out.strip().lower()
+        if code != 0 or not _FULL_SHA.fullmatch(full) or not full.startswith(sha.lower()):
+            return None
+        return full
+
     def remote_branches_containing(self, sha: str) -> list[str]:
         """Remote-tracking branches (local refs, never fetched) holding the commit."""
-        if not _HEX_ID.fullmatch(sha):
+        full = self._commit_id(sha)
+        if full is None:
             return []
-        _, out = self._run(["branch", "-r", "--no-column", _REF_FORMAT, f"--contains={sha}"])
+        _, out = self._run(["branch", "-r", "--no-column", _REF_FORMAT, f"--contains={full}"])
         return _ref_names(out)
 
     def has_commit(self, sha: str) -> bool:
-        if not _HEX_ID.fullmatch(sha):
-            return False
-        code, _ = self._run(["cat-file", "-e", "--end-of-options", f"{sha}^{{commit}}"],
-                            check=False)
-        return code == 0
+        return self._commit_id(sha) is not None
 
     # -- paths ----------------------------------------------------------------
 
