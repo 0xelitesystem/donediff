@@ -210,7 +210,10 @@ donediff now reads more coding agents than Claude Code.
 - SEC-244: behind a hidden exit code a pass marker counts only through
   filters that pass lines unchanged (`tail`, `head`, `tee` and the like),
   not `grep`, `sed` or `awk`. A stage that reads input of its own or cuts
-  bytes (`cat <<<`, `tee >(...)`, `tail -c`) is no such filter.
+  bytes (`cat <<<`, `tee >(...)`, `tail -c`) is no such filter. A filter
+  counts only with options known to keep whole lines (`tail -n 3`,
+  `head -20`, `tee -a`); any other option (`tail -18c`, `tail --byt 18`,
+  `cat -A`) leaves the claim UNVERIFIED.
 - SEC-245: claims are read with invisible characters dropped and look-alike
   letters in mixed-script words folded, with a LOW `hidden_characters`
   signal; reports escape zero-width, filler, separator and tag characters.
@@ -222,13 +225,20 @@ donediff now reads more coding agents than Claude Code.
   `&` or `!`, since another command in the call can print one
   (`pytest >/dev/null || echo '5 passed'`); such a run leaves the claim
   UNVERIFIED. A marker printed before a piped check
-  (`echo '5 passed'; pytest | tail -1`) does not count either.
+  (`echo '5 passed'; pytest | tail -1`) does not count either. Another
+  statement in the same call lets a pass marker count only when it
+  provably prints nothing (`cd`, a virtualenv activate, `set -e`,
+  `set -o pipefail`, a plain `export` or assignment); `pushd`, `set -x`,
+  `source` of a script or a command substitution leave the claim
+  UNVERIFIED.
 - SEC-251: a trap whose handler exits 0 (`trap 'exit 0' EXIT`, PowerShell
   `trap { exit 0 }`) is a swallowed failure, and a shell started through
   `timeout`, `gtimeout`, `stdbuf` or `xargs` is read for masking too. More
   trap forms are read: a quoted or computed code, `exec`, `$'...'`, a trap
   inside a function, `if` or `eval`, or one set through `builtin` or
-  `command`.
+  `command`. Shell text donediff cannot read that runs in the same shell
+  (`source <(...)`, `eval "$(...)"`, `source /dev/stdin`) counts as a trap
+  that may exit 0, and a trap on any signal counts, not only one on EXIT.
 - SEC-252: an exit code written in a command (`exit N`, `return N`) is read
   as bash reads it: up to 19 digits, a code that is 0 mod 256 inside the
   64-bit range exits 0 (`exit 1152921504606846976`), and a number outside
@@ -238,7 +248,10 @@ donediff now reads more coding agents than Claude Code.
   `--if-present`, `--if-present=true`, an `npm_config_if_present` variable
   set in the call), and output saying no test ran is no proof (Maven
   `Tests run: 0,` on every count line, dotnet `No test matches the given
-  testcase filter`, pytest with every test deselected).
+  testcase filter`, pytest with every test deselected). npm's shortened
+  forms of `--if-present` (`--if`, `--if-pres`, `--if-presen=true`) are no
+  check either, and an `npm_config_if_present` variable set in the call
+  makes `npm test` no check whatever its value.
 - SEC-254: secret masking of JWT-like tokens runs in linear time; a long
   run of the token prefix had taken seconds to minutes.
 - SEC-255: claims are also read with the remaining default-ignorable
@@ -261,29 +274,52 @@ donediff now reads more coding agents than Claude Code.
   as failure text, so a pass marker in the same output no longer verifies
   a run whose exit code was hidden.
 - SEC-290: a check sent to the background counts as checked only when
-  `wait $!` (or `%1`, `-n`) is the last command right after it, so
-  `& wait $! || true` and `& wait -f` read as hidden exit codes.
+  `wait $!` (or `%1`, `-n`) is the last command right after it, the wait
+  is not itself sent to the background, and, for `%1` or `-n`, no other
+  job went to the background before the check, so `& wait $! || true`,
+  `& wait -f` and `& wait $! &` read as hidden exit codes.
 - SEC-291: a claim that a command worked, made after a trap that exits 0
-  (`trap 'exit 0' EXIT`), is UNVERIFIED instead of VERIFIED.
-- SEC-292: a status test that exits 0 when the check failed
-  (`[ $? -ne 0 ] && exit`, `[ $? -eq 1 ] || exit 1`,
-  `rc=$?; rc=0; exit $rc`) no longer counts as keeping the check's exit
-  code.
+  (`trap 'exit 0' EXIT`), is UNVERIFIED instead of VERIFIED. A trap is
+  read wherever it stands in command position, however the word is
+  written (`\trap`, `'trap'`, `x=1 trap`, inside `case`), and a handler
+  counts as keeping the status only when it provably does; any other
+  handler leaves the claim UNVERIFIED.
+- SEC-292: a status read counts as keeping the check's exit code only in a
+  few plain forms right after the check (`exit $?`, `rc=$?` then
+  `exit $rc`, `[ $? -ne 0 ] && exit 1`, `if [ $? -ne 0 ]; then ...;
+  exit 1; fi`, `[ $? -eq 0 ] || exit 1`); any other form, such as a status
+  test that exits 0 when the check failed (`[ $? -ne 0 ] && exit`,
+  `rc=$?; rc=0; exit $rc`), an exit behind `||`, or `$?` read after
+  another command, leaves the claim UNVERIFIED.
 - SEC-293: the Codex CLI reader, and the readers for other formats, keep
   only the tool input donediff reads for a tool they do not model, so a
-  large input to such a tool no longer fills memory.
-- SEC-294: a Claude Code transcript keeps at most 200,000 MultiEdit edit
-  pairs, so a transcript padded with tiny edits no longer fills memory; a
-  call past that limit is counted as unreadable.
+  large input to such a tool no longer fills memory. The Gemini CLI and
+  Qwen Code readers keep only the fields donediff reads in every record
+  they hold and do not read a session file over 512 MiB, and the Goose,
+  OpenCode and Cline readers keep only the fields donediff reads from a
+  tool they do not model, so padding in such a file no longer fills
+  memory.
+- SEC-294: the 200,000 edit-pair limit holds per session, across the main
+  transcript, its sub-agent transcripts and the Codex, OpenCode and Cline
+  readers, and a tool donediff does not model keeps no edit list, so tiny
+  edits or patch hunks no longer fill memory; a call past that limit is
+  counted as unreadable.
 - SEC-295: a JSON Web Token written straight after a dash (`jwt-`,
   `--jwt-`, a dash list item) is masked again; the SEC-254 speed fix had
-  stopped masking it.
+  stopped masking it. A token is also masked when its first part holds a
+  dash, and when it is glued to a word or an underscore
+  (`TOKEN_<token>`, `auth<token>`), so a readable token next to a word no
+  longer reaches a report or a CI log.
 - SEC-296: a keycap emoji or a Turkish word with a dotless i no longer
   raises the hidden-characters signal; a dotless i that changes the claims
-  read still does.
-- SEC-297: a library name such as Node.js (unless the session wrote or
-  edited a file of that name), a question, or a sentence with "neither",
-  "nor" or "whether" is no longer read as a claim that a file was created.
+  read still does. Only a real keycap emoji (a 0-9, `#` or `*` base) is
+  exempt: a variation selector after a letter still raises the signal
+  even when a keycap mark follows.
+- SEC-297: a library name such as Node.js (unless the session wrote,
+  edited or tried to write a file of exactly that name) or a question is
+  no longer read as a claim that a file was created, and a sentence with
+  "neither", "nor" or "whether" drops only its file-created claim; a test,
+  commit or push claim in it is still checked.
 
 ### Security
 
