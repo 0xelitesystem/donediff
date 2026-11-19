@@ -472,11 +472,29 @@ def _fails_in(text: str, after_or: bool = False) -> bool:
     return False
 
 
+_STATUS_CODES = frozenset({"$?", "${?}", "$LASTEXITCODE", "${LASTEXITCODE}"})
+
+
 def _exits_zero(text: str) -> bool:
-    """True when `text` runs exit or return with a literal code that is 0 mod 256."""
-    for match in _EXIT_IN_TEXT.finditer(_QUOTED_TEXT.sub(" ", text)):
+    """True when `text` may exit 0 (SEC-251 leftover): exit or return with a
+    literal code that is 0 mod 256 (quoted too), with any code other than a
+    literal, `$?` or a variable saved from `$?` in `text` (`exit +0`,
+    `exit $((0))`), or exec."""
+    text = re.sub(r"(\b(?:exit|return)\s+(?:/b\s+)?)([\"'])([^\"'\s]+)\2", r"\1\3", text,
+                  flags=re.IGNORECASE)
+    blank = _QUOTED_TEXT.sub(" ", text)
+    if re.search(r"(?:^|[;{(&|]|\b(?:then|else|do)\b)\s*exec\b", blank, re.IGNORECASE):
+        return True
+    kept = {m.group(1) for m in _STATUS_SAVED.finditer(text)}
+    kept_codes = _STATUS_CODES | {"$" + k for k in kept} | {"${" + k + "}" for k in kept}
+    for match in _EXIT_IN_TEXT.finditer(blank):
         code = match.group(1)
-        if code is not None and re.fullmatch(r"-?\d+", code) and not exit_literal_fails(code):
+        if code is None:
+            continue
+        if re.fullmatch(r"-?\d+", code):
+            if not exit_literal_fails(code):
+                return True
+        elif code.strip('"') not in kept_codes:
             return True
     return False
 
@@ -485,8 +503,15 @@ def _exits_zero(text: str) -> bool:
 # returned (SEC-251): bash `trap 'exit 0' EXIT` (or 0) wherever it stands, ERR
 # or DEBUG when set before the check, and PowerShell's `trap { exit 0 }`, which
 # covers its whole scope. A computed code (`exit $rc`) may keep the status.
-_TRAP_BASH = re.compile(r"^trap\s+(?:--\s+)?('[^']*'|\"(?:[^\"\\]|\\.)*\"|[^\s'\"{]\S*)\s+(.+)$",
-                        re.IGNORECASE | re.DOTALL)
+# The handler may be $'..' or carry `\ ` escapes (SEC-251 leftover).
+_TRAP_BASH = re.compile(r"^trap\s+(?:--\s+)?(\$'(?:[^'\\]|\\.)*'|'[^']*'|\"(?:[^\"\\]|\\.)*\""
+                        r"|(?:[^\s'\"{\\]|\\.)+)\s+(.+)$", re.IGNORECASE | re.DOTALL)
+# A trap set after builtin, command, eval (quoted too), then, do, else, `{` or
+# `(`, not only at a statement start (SEC-251 leftover). `echo "trap ..."` is not one.
+_TRAP_START = re.compile(
+    r"(?:^|[;{(!&]|\b(?:then|do|else|builtin|command)\s|\beval\s+[\"']?)\s*(trap)(?![\w-])",
+    re.IGNORECASE)
+_FUNC_DEF = re.compile(r"(?:^|[\s;{])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)")
 _TRAP_PS = re.compile(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{(.*)\}\s*$", re.IGNORECASE | re.DOTALL)
 _TRAP_ANYWHERE = frozenset({"exit", "sigexit", "0"})
 _TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
@@ -495,9 +520,10 @@ _TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug"})
 def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     """"anywhere" or "before" for a trap at statement `pos` whose handler exits
     0 (see above), else None. A PowerShell block cut at `;` is joined back."""
-    text = texts[pos].strip().lstrip("({!& \t")
-    if not text[:4].lower() == "trap":
+    start = _TRAP_START.search(texts[pos])
+    if start is None:
         return None
+    text = texts[pos][start.start(1):].strip()
     block = text
     if re.match(r"^trap\b(?:\s*\[[^\]]*\])?\s*\{", text, re.IGNORECASE) and "}" not in text:
         end = pos
@@ -510,11 +536,19 @@ def _zero_exit_trap(texts: list[str], pos: int) -> str | None:
     match = _TRAP_BASH.match(text)
     if match is None:
         return None
-    sigs = {s.lower() for s in match.group(2).split()}
+    sigs = {s.lower().strip("\"';") for s in match.group(2).split()}
     reach = "anywhere" if sigs & _TRAP_ANYWHERE else "before" if sigs & _TRAP_BEFORE else None
     handler = match.group(1)
-    handler = handler[1:-1] if handler[:1] in ("'", '"') else handler
-    return reach if reach and _exits_zero(handler) else None
+    if handler[:2] == "$'":
+        handler = handler[2:-1]
+    elif handler[:1] in ("'", '"'):
+        handler = handler[1:-1]
+    else:
+        handler = re.sub(r"\\(.)", r"\1", handler)
+    # A handler that calls a function defined in the call may exit 0 there.
+    funcs = {m.group(1) for t in texts for m in _FUNC_DEF.finditer(t)}
+    called = set(handler.split()[:1])
+    return reach if reach and (_exits_zero(handler) or bool(called & funcs)) else None
 
 
 def zero_exit_trap(command: str, _depth: int = 0) -> str | None:
@@ -524,13 +558,14 @@ def zero_exit_trap(command: str, _depth: int = 0) -> str | None:
     statements = [st for st in split_statements(command) if any(s for s in st.stages)]
     texts = [_text(st) for st in statements]
     for pos in range(len(statements)):
-        if _zero_exit_trap(texts, pos):
-            return texts[pos].strip()[:60]
         for stage in statements[pos].stages:
             inner = wrapper_inner(stage, launchers=True) if stage and _depth < 2 else None
             found = zero_exit_trap(inner, _depth + 1) if inner else None
             if found:
                 return found
+        if _zero_exit_trap(texts, pos):
+            start = _TRAP_START.search(texts[pos])
+            return texts[pos][start.start(1) if start else 0:].strip()[:60]
     return None
 
 

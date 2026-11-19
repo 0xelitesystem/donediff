@@ -126,3 +126,40 @@ def test_v3_a_status_test_that_exits_zero_on_failure_keeps_nothing(tmp_path, com
 ])
 def test_v3_a_status_test_that_exits_with_a_failure_keeps_the_status(command):
     assert _kinds(command) == []
+
+
+# -- SEC-251 leftover: trap forms ------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    "trap 'exit \"0\"' EXIT; " + _QUIET,
+    "trap 'exit +0' EXIT; " + _QUIET,
+    "trap 'exit $((0))' EXIT; " + _QUIET,
+    "trap exit\\ 0 EXIT; " + _QUIET,
+    "trap $'exit 0' EXIT; " + _QUIET,
+    "f(){ trap 'exit 0' EXIT; }; f; " + _QUIET,
+    "if true; then trap 'exit 0' EXIT; fi; " + _QUIET,
+    "builtin trap 'exit 0' EXIT; " + _QUIET,
+    "command trap 'exit 0' EXIT; " + _QUIET,
+    "eval \"trap 'exit 0' EXIT\"; " + _QUIET,
+    "g(){ exit 0; }; trap g EXIT; " + _QUIET,
+    "trap 'exec true' EXIT; " + _QUIET,
+    "trap 'x=0; exit \"$x\"' EXIT; " + _QUIET,
+])
+def test_sec251_leftover_trap_forms_swallow_the_failure(tmp_path, command):
+    assert "swallowed_failure" in _kinds(command)
+    finding, signals = _verdict(tmp_path, command, "5 passed")
+    assert finding.verdict is Verdict.UNVERIFIED
+    assert "swallowed_failure" in signals
+
+
+@pytest.mark.parametrize("command", [
+    "trap 'rc=$?; exit \"$rc\"' EXIT; python -m pytest -q",
+    "trap 'exit $?' EXIT; python -m pytest -q",
+    "trap { exit $LASTEXITCODE }; python -m pytest -q",
+    "trap \"echo done\" EXIT; python -m pytest -q",
+    "trap exit\\ 1 EXIT; python -m pytest -q",
+    "command trap 'exit 0' INT; python -m pytest -q",
+    "echo \"trap 'exit 0' EXIT\"; python -m pytest -q",
+])
+def test_sec251_leftover_traps_that_keep_the_status_are_no_mask(command):
+    assert _kinds(command) == []
