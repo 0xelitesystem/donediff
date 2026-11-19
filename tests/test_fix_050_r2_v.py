@@ -242,8 +242,6 @@ def test_sec253_leftover_if_present_forms_run_no_test(tmp_path, command):
 @pytest.mark.parametrize("command", [
     "npm test",
     "npm test --if-present=false",
-    "npm_config_if_present=false npm test",
-    "npm_config_if_present=0 npm test",
 ])
 def test_sec253_leftover_npm_test_without_if_present_is_a_check(command):
     assert check_types(command) & CHECK_TYPES

@@ -11,7 +11,7 @@ import pytest
 
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 from donediff import cli
-from donediff.evidence import masking, zero_exit_trap
+from donediff.evidence import CHECK_TYPES, check_types, masking, zero_exit_trap
 from donediff.models import Verdict
 
 _QUIET = "python -m pytest -q >/dev/null 2>&1"
@@ -258,3 +258,35 @@ def test_sec250_r3_silent_statements_still_let_a_marker_verify(tmp_path, before)
     finding, _ = _verdict(tmp_path, before + "; python -m pytest -q 2>&1 | tail -3",
                           "12 passed in 0.2s")
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- Row 6, SEC-253: npm's if-present by any prefix, and its variable with any value --
+
+@pytest.mark.parametrize("command", [
+    "npm test --if",
+    "npm test --if-",
+    "npm test --if-pres",
+    "npm test --if-presen=true",
+    "npm test --IF-PRESENT",
+    "npm run test --if-p",
+    "npm_config_if_present=false npm test",
+    "npm_config_if_present=0 npm test",
+    "env 'npm_config_if-present=true' npm test",
+    "NPM_CONFIG_IF-PRESENT=1 npm test",
+    "$env:npm_config_if_present=''; npm test",
+])
+def test_sec253_r3_if_present_by_prefix_or_variable_is_never_a_check(tmp_path, command):
+    assert not check_types(command) & CHECK_TYPES
+    finding, _ = _verdict(tmp_path, command, "")
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("command", [
+    "npm test",
+    "npm test --if-present=false",
+    "npm test --if-pres=0",
+    "npm test --i",
+    "npm test --ignore-scripts",
+])
+def test_sec253_r3_npm_test_without_if_present_is_a_check(command):
+    assert check_types(command) & CHECK_TYPES

@@ -251,8 +251,8 @@ _OPTION_ENV = re.compile(
     r"(?:\$env:)?\b(?:PYTEST_ADDOPTS|MAVEN_OPTS|MAVEN_ARGS|GRADLE_OPTS|NODE_OPTIONS)"
     r"\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
 # npm's if-present set through its config variable (SEC-253 leftover), `$env:` too.
-_NPM_IF_PRESENT = re.compile(r"\bnpm_config_if_present\s*=\s*[\"']?(?!false\b|0\b)[^\s\"';]",
-                             re.IGNORECASE)
+# npm_config_if_present (or if-present) set in the call, with any value (fail closed, SEC-253 (d)).
+_NPM_IF_PRESENT = re.compile(r"\bnpm_config_if[-_]present\b", re.IGNORECASE)
 # --exit-zero (ruff, flake8, pylint): findings no longer fail the run.
 _EXIT_ZERO_FLAG = re.compile(r"(?:^|\s)--exit-zero\b")
 _MAKE_DRY_RUN = frozenset({"-n", "--just-print", "--recon"})
@@ -289,10 +289,12 @@ def _read_only(norm: str) -> bool:
     words = [w.strip("\"'") for w in norm.split()]
     if any(w in _READ_ONLY_FLAGS for w in words[1:]):
         return True
-    # --if-present=true (any value but false or 0) is the flag (SEC-253 leftover).
-    if any(w.lower().startswith("--if-present=") and w[13:].lower() not in ("false", "0")
-           for w in words[1:]):
-        return True
+    # npm takes any unambiguous prefix of --if-present (`--if`, `--if-pres`, `--if-presen=true`);
+    # any value but false or 0 is the flag (SEC-253, ruling (d)).
+    for w in words[1:]:
+        name, eq, value = w.lower().partition("=")
+        if len(name) >= 4 and "--if-present".startswith(name) and not (eq and value in ("false", "0")):
+            return True
     if words and words[0] == "ctest" and any(w in _CTEST_LIST for w in words[1:]):
         return True
     # gradle test -x test (--exclude-task test): the test task is excluded.
