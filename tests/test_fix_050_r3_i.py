@@ -279,6 +279,25 @@ def test_new2_i2_codex_patch_hunks_have_a_budget(tmp_path, monkeypatch):
     assert all(e.file_path == "a.py" for e in session.tool_calls())
 
 
+def test_new2_i2_cline_patch_hunks_have_a_budget(tmp_path, monkeypatch):
+    from donediff import parser
+    from donediff.readers import CLINE
+    monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10)
+    mk_cline = _load("make_cline_050r3", FIXTURES / "cline" / "make_cline.py")
+    body = "*** Begin Patch\n*** Update File: a.py\n" + "@@\n-a\n+b\n" * 8 + "*** End Patch"
+    doc = mk_cline.Doc()
+    doc.user("Fix it.")
+    for i in range(3):
+        doc.assistant(calls=[mk_cline.call(f"p{i}", "apply_patch", {"input": body})])
+        doc.results(mk_cline.result(f"p{i}", "apply_patch", mk_cline.op("apply_patch", "Done")))
+    doc.assistant("Done.")
+    session = CLINE.parse(mk_cline.write(tmp_path / f"{mk_cline.SID}.messages.json",
+                                         doc.document()))
+    kept = [len(e.tool_input.get("edits", ())) for e in session.tool_calls()]
+    assert kept == [8, 0, 0] and session.unrecognised == 2
+    assert all(e.file_path == "a.py" for e in session.tool_calls())
+
+
 def test_new2_i2_opencode_multiedit_pairs_have_a_budget(tmp_path, monkeypatch):
     from donediff import cli, parser
     monkeypatch.setattr(parser, "_MAX_EDIT_PAIRS", 10)
