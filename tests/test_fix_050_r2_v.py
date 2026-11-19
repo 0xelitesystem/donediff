@@ -10,7 +10,7 @@ import pytest
 
 from conftest import assistant_text, assistant_tool, tool_result, write_jsonl
 from donediff import cli
-from donediff.evidence import masking
+from donediff.evidence import CHECK_TYPES, check_types, masking
 from donediff.models import Verdict
 
 _QUIET = "python -m pytest -q >/dev/null 2>&1"
@@ -221,3 +221,30 @@ def test_sec244_leftover_a_filter_with_input_of_its_own_or_a_byte_cut_is_no_proo
 def test_sec244_leftover_line_cuts_still_verify(tmp_path, command):
     finding, _ = _verdict(tmp_path, command, "12 passed in 0.2s")
     assert finding.verdict is Verdict.VERIFIED
+
+
+# -- SEC-253 leftover: npm's if-present written another way --------------------
+
+@pytest.mark.parametrize("command", [
+    "npm test --if-present=true",
+    "npm test --if-present=yes",
+    "npm_config_if_present=true npm test",
+    "NPM_CONFIG_IF_PRESENT=true npm test",
+    "export npm_config_if_present=true; npm test",
+    "env npm_config_if_present=true npm test",
+    "$env:npm_config_if_present='true'; npm test",
+])
+def test_sec253_leftover_if_present_forms_run_no_test(tmp_path, command):
+    assert not check_types(command) & CHECK_TYPES
+    finding, _ = _verdict(tmp_path, command, "")
+    assert finding.verdict is Verdict.UNVERIFIED
+
+
+@pytest.mark.parametrize("command", [
+    "npm test",
+    "npm test --if-present=false",
+    "npm_config_if_present=false npm test",
+    "npm_config_if_present=0 npm test",
+])
+def test_sec253_leftover_npm_test_without_if_present_is_a_check(command):
+    assert check_types(command) & CHECK_TYPES

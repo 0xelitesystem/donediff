@@ -250,6 +250,9 @@ _CTEST_LIST = frozenset({"-N", "--show-only"})
 _OPTION_ENV = re.compile(
     r"(?:\$env:)?\b(?:PYTEST_ADDOPTS|MAVEN_OPTS|MAVEN_ARGS|GRADLE_OPTS|NODE_OPTIONS)"
     r"\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
+# npm's if-present set through its config variable (SEC-253 leftover), `$env:` too.
+_NPM_IF_PRESENT = re.compile(r"\bnpm_config_if_present\s*=\s*[\"']?(?!false\b|0\b)[^\s\"';]",
+                             re.IGNORECASE)
 # --exit-zero (ruff, flake8, pylint): findings no longer fail the run.
 _EXIT_ZERO_FLAG = re.compile(r"(?:^|\s)--exit-zero\b")
 _MAKE_DRY_RUN = frozenset({"-n", "--just-print", "--recon"})
@@ -286,6 +289,10 @@ def _read_only(norm: str) -> bool:
     words = [w.strip("\"'") for w in norm.split()]
     if any(w in _READ_ONLY_FLAGS for w in words[1:]):
         return True
+    # --if-present=true (any value but false or 0) is the flag (SEC-253 leftover).
+    if any(w.lower().startswith("--if-present=") and w[13:].lower() not in ("false", "0")
+           for w in words[1:]):
+        return True
     if words and words[0] == "ctest" and any(w in _CTEST_LIST for w in words[1:]):
         return True
     # gradle test -x test (--exclude-task test): the test task is excluded.
@@ -317,7 +324,8 @@ def stage_types(stage: str) -> frozenset[ClaimType]:
 def _env_read_only(text: str) -> bool:
     """True when an option variable set in `text` (PYTEST_ADDOPTS=--co ...)
     holds a flag that makes the runner list or skip instead of run."""
-    return any(_read_only("x " + m.group(1).strip("\"'")) for m in _OPTION_ENV.finditer(text))
+    return bool(_NPM_IF_PRESENT.search(text)) or any(
+        _read_only("x " + m.group(1).strip("\"'")) for m in _OPTION_ENV.finditer(text))
 
 
 def check_types(command: str) -> frozenset[ClaimType]:
