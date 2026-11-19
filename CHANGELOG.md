@@ -39,13 +39,22 @@ donediff now reads more coding agents than Claude Code.
   exactly those words (prefixes such as `sudo` or `FOO=1` aside), or an
   interpreter running the named script as its first argument (`python
   hello.py`); `cat hello.py` is not a run. VERIFIED needs exit code 0 from
-  the agent's own log, no failure in the output, and nothing in the same
-  call that sets the exit code instead (a pipe after it, `;`, `||`, `&` or
-  `!`). A non-zero exit code or error flag that only that command can
-  explain is CONTRADICTED. Anything else (no run, no result, a status only,
-  a declined, skipped or cancelled call, an exit code printed only in the
-  output, a rewound run) is UNVERIFIED. A run claim that names no command
-  is not checked.
+  the agent's own log, no failure in the output, no flag that forces a pass
+  (such as `--passWithNoTests`), and that command setting the call's exit
+  code: nothing after it but `&&` (no pipe, `;`, `||` or `&` after it), no
+  `!` before it, and not run only because an earlier command failed
+  (`a || python hello.py`). A non-zero exit code or error flag that only
+  that command can explain is CONTRADICTED. (`cd app && python hello.py`
+  failing stays UNVERIFIED: the `cd` may be what failed.) Anything else (no
+  run, no result, a status only, a declined, skipped or cancelled call, an
+  exit code printed only in the output, a rewound run) is UNVERIFIED. A run
+  claim that names no command is not checked.
+- A file named as a Markdown link counts in a created or edited claim:
+  for `I created [hello.py](src/hello.py)`, donediff checks
+  `src/hello.py`, as if it had been written in backticks. The link target
+  must be a local path that ends in the link text's file name (no URL, no
+  `#` anchor); any other link is not read as a claim. Links are kept as
+  written before matching, so a path holding `_` or `*` is not changed.
 - The JSON report's `scope` object has `unrecognised_records`: the number of
   records a reader could not read and skipped, the same count the terminal
   and Markdown scope line already showed.
