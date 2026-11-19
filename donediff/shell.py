@@ -207,6 +207,23 @@ def _skip_python_options(rest: list[str]) -> list[str]:
     return rest[i:] if i < len(rest) else rest
 
 
+def _drop_prefixes(words: list[str]) -> list[str]:
+    """The words after the ones that only change how the program starts:
+    env assignments, sudo, time and the like, timeout and its options, and
+    runners such as `uv run`."""
+    while words:
+        low = words[0].lower()
+        if low in _PREFIX_WORDS or _ASSIGNMENT.match(words[0]):
+            words = words[1:]
+        elif low == "timeout" and len(words) > 1:
+            words = _skip_timeout(words)
+        elif low in _RUNNERS and len(words) > 1 and words[1] == _RUNNERS[low]:
+            words = words[2:]
+        else:
+            break
+    return words
+
+
 def normalize_stage(stage: str, _depth: int = 0) -> str:
     """The stage with its prefixes dropped and its program reduced to a name.
 
@@ -214,17 +231,7 @@ def normalize_stage(stage: str, _depth: int = 0) -> str:
     `python -m pytest -q`. A shell wrapper (`bash -c "..."`) returns the
     normalised first stage of its inner command.
     """
-    words = _WORD.findall(stage.strip().lstrip("({!& \t"))
-    while words:
-        low = words[0].lower()
-        if low in _PREFIX_WORDS or _ASSIGNMENT.match(words[0]):
-            words.pop(0)
-        elif low == "timeout" and len(words) > 1:
-            words = _skip_timeout(words)
-        elif low in _RUNNERS and len(words) > 1 and words[1] == _RUNNERS[low]:
-            words = words[2:]
-        else:
-            break
+    words = _drop_prefixes(_WORD.findall(stage.strip().lstrip("({!& \t")))
     if not words:
         return ""
     head = _EXE_SUFFIX.sub("", _basename(words[0])).lower()
@@ -263,6 +270,87 @@ def program(stage: str) -> str:
     """The program name a stage starts, lowercased."""
     norm = normalize_stage(stage)
     return norm.split(" ", 1)[0] if norm else ""
+
+
+# -- a named command and its own exit status (claim type COMMAND_OK) ---------
+
+# Programs that run the script named as their first argument: `python hello.py`
+# runs `hello.py` (python3 and py count as python).
+_SCRIPT_RUNNERS = frozenset({"python", "node", "bun", "bash", "sh", "zsh", "pwsh",
+                             "powershell", "ruby", "perl", "php"})
+
+
+def command_words(text: str) -> list[str]:
+    """The words of a command as this scanner splits them, quotes removed."""
+    return [_unquote(w) for w in _WORD.findall(text)]
+
+
+def starts_command(stage: str, words: list[str]) -> bool:
+    """True when the stage runs the command `words`: its own words begin with
+    them, as written or after prefixes (`FOO=1`, `sudo`, `uv run`), or `words`
+    is one script that an interpreter runs as its first argument (`python
+    hello.py` runs `hello.py`). Words compare exactly: `./hello.py` is not
+    `hello.py`, `python3` is not `python`, and `cat hello.py` runs no script."""
+    if not words or not all(words):
+        return False
+    raw = _WORD.findall(stage.strip().lstrip("({!& \t"))
+    bare = [_unquote(w) for w in _drop_prefixes(raw)]
+    if [_unquote(w) for w in raw][:len(words)] == words or bare[:len(words)] == words:
+        return True
+    if len(words) == 1 and len(bare) > 1 and bare[1] == words[0]:
+        head = _EXE_SUFFIX.sub("", _basename(bare[0])).lower()
+        return head in _SCRIPT_RUNNERS or bool(_PY_HEAD.fullmatch(head))
+    return False
+
+
+def named_status(command: str, is_target, _depth: int = 0) -> tuple[bool, bool, str] | None:
+    """Whether the exit status of `command` is that of its last stage that
+    `is_target` accepts: None when no stage is accepted, else (success,
+    failure, how).
+
+    success: exit status 0 means that stage ran and exited 0. The stage ends
+    its pipeline (a pipe hands the status on), is not negated (`! x`), does not
+    follow `||` (it ran only if the left side failed), and only `&&` comes
+    after it (`; x`, `|| x` and `& x` hand the status on). `how` names what
+    breaks this, in the gaming signals' words (`| tail`, `; echo`).
+    failure: a non-zero status can only be that stage's: success holds, the
+    stage runs unconditionally (first, or after `;`, a newline or `&`), and
+    nothing comes after it. A `bash -c "..."` stage is read through.
+    """
+    statements = [st for st in split_statements(command) if any(st.stages)]
+    hit = None
+    for k, statement in enumerate(statements):
+        stages = [s for s in statement.stages if s]
+        for i, stage in enumerate(stages):
+            if is_target(stage):
+                inner = (True, True, "")
+            else:
+                wrapped = wrapper_inner(stage) if _depth < 2 else None
+                inner = named_status(wrapped, is_target, _depth + 1) if wrapped else None
+                if inner is None:
+                    continue
+            hit = (k, i, stages, inner)
+    if hit is None:
+        return None
+    k, i, stages, (_, inner_failure, how) = hit
+    before = statements[k - 1].op if k else ""
+    if i < len(stages) - 1:
+        how = "| " + (program(stages[i + 1]) or "?")
+    elif stages[0].lstrip("({ \t").startswith("!"):
+        how = "! (status negated)"
+    elif before == "||":
+        how = (program(statements[k - 1].stages[0]) or "?") + " ||"
+    for j in range(k, len(statements)):
+        op, last = statements[j].op, j == len(statements) - 1
+        if how or (op == "&&" and not last) or (last and op in ("", ";", "\n")):
+            continue
+        nxt = "" if last else program(statements[j + 1].stages[0])
+        how = (("; " if op in (";", "\n") else op + " ")
+               + (nxt or ("(background)" if op == "&" else "?")))
+    success = not how
+    failure = (success and inner_failure and k == len(statements) - 1
+               and before in ("", ";", "\n", "&"))
+    return success, failure, how
 
 
 _CD_COMMANDS = frozenset({"cd", "chdir", "pushd", "set-location", "sl"})

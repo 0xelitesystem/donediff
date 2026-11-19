@@ -48,8 +48,8 @@ from .models import (
 from .parser import epoch
 from .redact import redact_secrets
 from .shell import (
-    base_name, confined, is_remote_path, norm_path, program, run_directory, split_statements,
-    windows_drive,
+    base_name, command_words, confined, is_remote_path, named_status, norm_path, program,
+    run_directory, split_statements, starts_command, windows_drive,
 )
 
 RELAYED_REASON = "relayed from an agent's report, no command result seen"
@@ -122,14 +122,18 @@ def _no_proof(run: Event) -> str | None:
     if reason:
         return f"{reason}: `{_short(run.command)}`"
     if run.exit_code is None and run.status:
-        # A reader with no exit code for this run (Codex, opencode tool parts)
-        # gives its status; a status alone is no proof of success. The wording
-        # says "status", never "exit code" (CEO rule, D087).
-        return (f"the log has a status only ({run.status}), no proof of success: "
-                f"`{_short(run.command)}`")
+        return _status_only(run)
     if not evidence_of_success(run)[0]:
         return f"the run {_write_why(run)}: `{_short(run.command)}`"
     return None
+
+
+def _status_only(run: Event) -> str:
+    """A reader with no exit code for this run (Codex, opencode tool parts)
+    gives its status; a status alone is no proof of success. The wording says
+    "status", never "exit code" (CEO rule, D087)."""
+    return (f"the log has a status only ({run.status}), no proof of success: "
+            f"`{_short(run.command)}`")
 
 
 def _masked_note(event: Event) -> str:
@@ -153,6 +157,7 @@ class Timeline:
         entries: dict[ClaimType, list[tuple[tuple, Event]]] = {}
         edits: list[tuple[tuple, Event]] = []
         rewound: dict[ClaimType, list[tuple[tuple, Event]]] = {}
+        shells: list[tuple[tuple, Event]] = []
         for key, event in self._all_tool_calls():
             for claim_type in event.check_types:
                 # A rewound run is never evidence for a claim, only a cap on one.
@@ -160,6 +165,11 @@ class Timeline:
                     claim_type, []).append((key, event))
             if event.is_file_edit():
                 edits.append((key, event))
+            if event.command:
+                shells.append((key, event))
+        shells.sort(key=lambda pair: pair[0])
+        self._shell_keys = [k for k, _ in shells]
+        self._shells = [e for _, e in shells]
         for claim_type, items in entries.items():
             items.sort(key=lambda pair: pair[0])
             self._runs[claim_type] = ([k for k, _ in items], [e for _, e in items])
@@ -256,6 +266,13 @@ class Timeline:
         hi = bisect.bisect_left(self._edit_keys, claim_key)
         return [self._edits[i] for i in range(hi)
                 if self.eligible(self._edits[i], claim_key, restrict)]
+
+    def shell_runs_before(self, claim_key, restrict) -> list[tuple[tuple, Event]]:
+        """Eligible shell calls before the claim with their keys, oldest first.
+        Rewound calls are included: they may cap a claim, never back one."""
+        hi = bisect.bisect_left(self._shell_keys, claim_key)
+        return [(self._shell_keys[i], self._shells[i]) for i in range(hi)
+                if self.eligible(self._shells[i], claim_key, restrict)]
 
 
 def _inside(edit: Event, folder: str | None) -> bool:
@@ -418,6 +435,9 @@ NO_EVIDENCE_STATUS = (_FAILED_STATUS | _UNKNOWN_STATUS | _SCRIPT_ENDED
                       | _REWOUND_STATUS | _WAITING_STATUS)
 # The words a reader writes when the agent's own record says the call worked.
 SUCCESS_STATUS = frozenset({"completed", "success"})
+# A call the agent's own record says never ran (models.Event.mark_not_run), or
+# a refusal word: no evidence either way, never CONTRADICTED.
+_NOT_RUN_STATUS = frozenset({"declined", "skipped", "cancelled", "canceled", "rejected"})
 
 # Why a call is no evidence of success (the second value of evidence_of_success).
 NO_RESULT, REWOUND, FAILED, UNKNOWN, WAITING, NO_RECORD = (
@@ -490,6 +510,10 @@ def _rewound_cap(timeline: Timeline, kind: ClaimType, run_key: tuple, ctx: _Cont
     failed = timeline.rewound_failure(kind, run_key, ctx.key)
     if failed is None:
         return finding
+    return _rewound_finding(claim, ctx, failed)
+
+
+def _rewound_finding(claim: Claim, ctx: _Context, failed: Event) -> Finding:
     how = (f"exit {failed.exit_code}" if failed.exit_code is not None
            else f"status {failed.status or 'error'}")
     return _found(claim, ctx, Verdict.UNVERIFIED,
@@ -724,6 +748,65 @@ def _verify_path_written(timeline: Timeline, claim: Claim, ctx: _Context,
     return _found(claim, ctx, Verdict.VERIFIED, how, last)
 
 
+def _verify_command_ok(timeline: Timeline, claim: Claim, ctx: _Context) -> Finding:
+    """'`X` worked / ran successfully / exited with code 0' (CEO ruling (b)
+    2026-11-19, TRUTH row 36). The last run of X before the claim decides, by
+    its structured exit code alone: 0 that is X's own is VERIFIED; a failure
+    only X can have caused (non-zero exit code, or the reader's error flag) is
+    CONTRADICTED. Anything else is UNVERIFIED: no run, no result, a status
+    only, a call that did not run, a status a pipe or another command decides,
+    a failure shown only in the output, a rewound run. A run of X is a stage
+    that starts X (shell.starts_command): `cat hello.py` is no run of hello.py."""
+    words = command_words(claim.detail)
+    runs: list[tuple[tuple, Event, tuple[bool, bool, str]]] = []
+    for key, run in timeline.shell_runs_before(ctx.key, ctx.restrict):
+        if not words or words[0] not in run.command:
+            continue  # cheap test first: X's first word is in every run of X
+        owner = named_status(run.command, lambda stage: starts_command(stage, words))
+        if owner is not None:
+            runs.append((key, run, owner))
+    live = [entry for entry in runs if not entry[1].rewound]
+    if not live:
+        if runs:
+            last = runs[-1][1]
+            return _found(claim, ctx, Verdict.UNVERIFIED,
+                          f"the run {_write_why(last)}: `{_short(last.command)}`", last)
+        return _unverified(claim, ctx, f"no run of `{_short(claim.detail)}` before the claim")
+    key, run, (_, own_failure, how) = live[-1]
+    shown = f"`{_short(run.command)}`"
+    if evidence_of_success(run)[1] == NO_RESULT:
+        return _found(claim, ctx, Verdict.UNVERIFIED, _no_result(run), run)
+    if (run.status or "").lower() in _NOT_RUN_STATUS:
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"the call did not run (status {run.status}): {shown}", run)
+    if run.is_error or (run.exit_code or 0) != 0:
+        failed = (f"exit {run.exit_code}" if run.exit_code is not None
+                  else f"status {run.status}" if run.status else "an error")
+        if not own_failure:
+            return _found(claim, ctx, Verdict.UNVERIFIED,
+                          f"the call failed ({failed}), but another command in it may be "
+                          f"what failed: {shown}", run)
+        return _found(claim, ctx, Verdict.CONTRADICTED,
+                      f"most recent run failed ({failed}): {shown}", run)
+    if run.exit_code is None:
+        return _found(claim, ctx, Verdict.UNVERIFIED, _status_only(run) if run.status
+                      else f"the run has no success record in the log: {shown}", run)
+    how = how or _how_masked(run)
+    if how:
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"exit code of `{_short(claim.detail)}` hidden by `{how}`: {shown}", run)
+    if run.failure_hint:
+        return _found(claim, ctx, Verdict.UNVERIFIED,
+                      f"exit 0, but the output reports a failure: {shown}", run)
+    if not evidence_of_success(run)[0]:
+        return _found(claim, ctx, Verdict.UNVERIFIED, f"the run {_write_why(run)}: {shown}", run)
+    rewound = next((r for k, r, _ in reversed(runs)
+                    if r.rewound and k > key and r.result_seen and _command_failed(r)), None)
+    if rewound is not None:
+        return _rewound_finding(claim, ctx, rewound)
+    return _found(claim, ctx, Verdict.VERIFIED, f"{shown} succeeded (exit 0)", run)
+
+
 # -- git state ---------------------------------------------------------------
 
 _GIT_TYPES = frozenset({
@@ -876,6 +959,8 @@ def verify_claims(session: Session, claims: list[Claim],
                 finding = _verify_commit_id(timeline, claim, ctx)
             elif claim.type is ClaimType.PATH_WRITTEN:
                 finding = _verify_path_written(timeline, claim, ctx, check_disk)
+            elif claim.type is ClaimType.COMMAND_OK:
+                finding = _verify_command_ok(timeline, claim, ctx)
             else:
                 finding = _verify_command_claim(timeline, claim, ctx)
             if git is not None and claim.type in _GIT_TYPES:

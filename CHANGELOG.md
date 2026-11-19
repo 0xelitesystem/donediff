@@ -30,6 +30,22 @@ donediff now reads more coding agents than Claude Code.
 - An exit code is taken only from the field where each agent records one.
   Where an agent logs a status and no exit code, the finding says "the log
   has a status only" and never "exit code".
+- A claim that a named command or script ran: "`python hello.py` worked",
+  "the `hello.py` script ran successfully", "`npm test` exited with code 0"
+  (JSON type `command_ok`). The name must be in backticks right before one
+  of those three phrases ("script", "command" or "program" may sit
+  between); a question is not a claim. The last run of that command before
+  the claim decides. A run is a command in a shell call that starts with
+  exactly those words (prefixes such as `sudo` or `FOO=1` aside), or an
+  interpreter running the named script as its first argument (`python
+  hello.py`); `cat hello.py` is not a run. VERIFIED needs exit code 0 from
+  the agent's own log, no failure in the output, and nothing in the same
+  call that sets the exit code instead (a pipe after it, `;`, `||`, `&` or
+  `!`). A non-zero exit code or error flag that only that command can
+  explain is CONTRADICTED. Anything else (no run, no result, a status only,
+  a declined, skipped or cancelled call, an exit code printed only in the
+  output, a rewound run) is UNVERIFIED. A run claim that names no command
+  is not checked.
 - The JSON report's `scope` object has `unrecognised_records`: the number of
   records a reader could not read and skipped, the same count the terminal
   and Markdown scope line already showed.

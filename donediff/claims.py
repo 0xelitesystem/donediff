@@ -114,6 +114,16 @@ _PATTERNS: list[tuple[ClaimType, re.Pattern]] = [
         r"|\bbug\s+(?:is\s+)?fixed\b|\bfixed\s+the\s+(?:bug|issue|problem|error)\b",
         re.IGNORECASE,
     )),
+    # A named command or script that ran (CEO ruling (b), 2026-11-19): the
+    # name in backticks right before one phrase of a fixed list, "worked",
+    # "ran successfully" or "exited with code 0" ("`python hello.py` worked",
+    # "the `hello.py` script ran successfully"). Other words in between ("It
+    # printed `hello` and exited with code 0") and a question are no claim.
+    (ClaimType.COMMAND_OK, re.compile(
+        r"`([^`\n]{1,200})`(?:\s+(?:script|command|program))?\s+"
+        r"(?:worked|ran\s+successfully|exited\s+with\s+code\s+0)\b(?!.*\?\s*$)",
+        re.IGNORECASE,
+    )),
 ]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -211,6 +221,8 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
         return groups[0].lower() if any(c.isdigit() for c in groups[0]) else None
     if claim_type in (ClaimType.FILE_CREATED, ClaimType.FILE_EDITED) and match.group(1) is None:
         return _link_file(match.group(2), match.group(3))
+    if claim_type is ClaimType.COMMAND_OK:
+        return match.group(1).strip() or None
     return groups[0] if groups else ""
 
 

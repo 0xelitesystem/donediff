@@ -226,6 +226,7 @@ class ClaimType(enum.Enum):
     TEST_COUNT = "test_count"
     COMMIT_ID = "commit_id"
     PATH_WRITTEN = "path_written"
+    COMMAND_OK = "command_ok"
 
 
 @dataclass
@@ -236,7 +237,8 @@ class Claim:
     quote: str  # what the finding shows: the sentence, or the matched phrase
     event_index: int  # index of the text event containing it
     # FILE_CREATED / FILE_EDITED / PATH_WRITTEN: the path; COMMIT_ID: the id;
-    # TEST_COUNT: the claimed number of passing tests.
+    # TEST_COUNT: the claimed number of passing tests; COMMAND_OK: the named
+    # command or script.
     detail: str = ""
     sentence: str = ""  # the whole sentence, when it holds more than one claim
 
