@@ -133,3 +133,48 @@ def test_qa031_multiedit_to_another_file_backs_nothing(tmp_path):
     finding = _file_claim(tmp_path, "MultiEdit",
                           {"file_path": "/home/dev/app/other.py", "edits": [_PAIR]})
     assert finding.verdict is Verdict.UNVERIFIED, finding.evidence
+
+
+# -- QA-030: a project file named like a library is a claim when the session wrote it --
+
+def _created_claims(tmp_path, records, name="lib.jsonl"):
+    from conftest import write_jsonl
+    from donediff.claims import extract_claims
+    from donediff.models import ClaimType
+    from donediff.parser import parse_transcript
+    from donediff.verify import verify_claims
+
+    session = parse_transcript(write_jsonl(tmp_path / name, records))
+    return [f for f in verify_claims(session, extract_claims(session), check_disk=False)
+            if f.claim.type is ClaimType.FILE_CREATED]
+
+
+def test_qa030_written_library_named_file_is_a_verified_claim(tmp_path):
+    from conftest import assistant_text, assistant_tool, tool_result
+    records = [assistant_tool("w1", "Write", {"file_path": "/home/dev/app/chart.js",
+                                              "content": "export default 1;\n"}),
+               tool_result("w1", "File created successfully"),
+               assistant_text("I created chart.js for the widget.")]
+    (finding,) = _created_claims(tmp_path, records)
+    assert finding.claim.detail == "chart.js"
+    assert finding.verdict is Verdict.VERIFIED, finding.evidence
+
+
+def test_qa030_edited_library_named_file_is_a_verified_claim(tmp_path):
+    from conftest import assistant_text, assistant_tool, tool_result
+    records = [assistant_tool("e1", "Edit", {"file_path": "/home/dev/app/src/three.js",
+                                             "old_string": "a", "new_string": "b"}),
+               tool_result("e1", "ok"),
+               assistant_text("I created three.js in the src folder.")]
+    (finding,) = _created_claims(tmp_path, records)
+    assert finding.verdict is Verdict.VERIFIED, finding.evidence
+
+
+def test_qa030_library_prose_without_a_write_is_still_no_claim(tmp_path):
+    from conftest import assistant_text, assistant_tool, tool_result
+    records = [assistant_tool("w1", "Write", {"file_path": "/home/dev/app/server.js",
+                                              "content": "x\n"}),
+               tool_result("w1", "File created successfully"),
+               assistant_text("I created a Node.js app."),
+               assistant_text("I created chart.js for the widget.")]
+    assert _created_claims(tmp_path, records) == []

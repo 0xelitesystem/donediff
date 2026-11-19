@@ -258,7 +258,7 @@ def disguised(text: str) -> bool:
     return read(text) != read(text.replace(_DOTLESS_I, "ɩ"))
 
 
-def _text_claims(text: str, index: int) -> list[Claim]:
+def _text_claims(text: str, index: int, written: frozenset = frozenset()) -> list[Claim]:
     claims: list[Claim] = []
     # Masked on the raw text, before markdown noise is stripped: a quote
     # is shown in every report (SEC-235).
@@ -267,19 +267,24 @@ def _text_claims(text: str, index: int) -> list[Claim]:
             continue  # code blocks / pasted output, not prose
         if _DISQUALIFIERS.search(sentence):
             continue
-        claims.extend(_sentence_claims(sentence, index))
+        claims.extend(_sentence_claims(sentence, index, written))
     return claims
 
 
 def extract_claims(session: Session) -> list[Claim]:
+    # File names the session wrote or edited, lower case: a file named like a
+    # library (chart.js) that the agent wrote is its file, not the library (QA-030).
+    written = frozenset(_base(e.file_path).lower() for e in session.events
+                        if e.kind is EventKind.TOOL_CALL and e.is_file_edit() and e.file_path)
     claims: list[Claim] = []
     for event in session.events:
         if event.kind is EventKind.TEXT:
-            claims.extend(_text_claims(event.text, event.index))
+            claims.extend(_text_claims(event.text, event.index, written))
     return _dedupe(claims)
 
 
-def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
+def _detail(claim_type: ClaimType, match: re.Match,
+            written: frozenset = frozenset()) -> str | None:
     """The claim's detail from its match, or None when it is no claim."""
     groups = [g for g in match.groups() if g]
     if claim_type is ClaimType.TEST_COUNT:
@@ -294,7 +299,7 @@ def _detail(claim_type: ClaimType, match: re.Match) -> str | None:
         code, text, target, bare = match.groups()[:4]
         if code is not None:
             return code
-        return _link_file(text, target) if text is not None else _bare_file(bare)
+        return _link_file(text, target) if text is not None else _bare_file(bare, written)
     if claim_type is ClaimType.FILE_EDITED and match.group(1) is None:
         return _link_file(match.group(2), match.group(3))
     if claim_type is ClaimType.COMMAND_OK:
@@ -306,9 +311,12 @@ def _base(path: str) -> str:
     return re.split(r"[\\/]", path)[-1]
 
 
-def _bare_file(name: str | None) -> str | None:
-    """A bare file name, or None for a web domain (example.com) or a library (Node.js)."""
-    if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS or name.lower() in _LIBRARY_NAMES:
+def _bare_file(name: str | None, written: frozenset = frozenset()) -> str | None:
+    """A bare file name, or None for a web domain (example.com) or a library
+    (Node.js) unless the session wrote or edited a file of that name (QA-030)."""
+    if not name or name.rsplit(".", 1)[-1].lower() in _WEB_TLDS:
+        return None
+    if name.lower() in _LIBRARY_NAMES and name.lower() not in written:
         return None
     return name
 
@@ -325,13 +333,14 @@ def _link_file(text: str, target: str) -> str | None:
     return target
 
 
-def _sentence_claims(sentence: str, index: int) -> list[Claim]:
+def _sentence_claims(sentence: str, index: int,
+                     written: frozenset = frozenset()) -> list[Claim]:
     found: list[tuple[ClaimType, str, str]] = []
     for claim_type, pattern in _PATTERNS:
         match = pattern.search(sentence)
         if not match:
             continue
-        detail = _detail(claim_type, match)
+        detail = _detail(claim_type, match, written)
         if detail is None:
             continue
         found.append((claim_type, match.group(0).strip(), detail))
