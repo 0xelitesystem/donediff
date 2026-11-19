@@ -352,6 +352,33 @@ def test_sec238_backslash_backtick_in_a_markdown_report(tmp_path):
     assert "\\`<img" not in report and "&#92;`<img" in report
 
 
+def _suffix_session(tmp_path, written):
+    records = [assistant_tool("t1", "Write", {"file_path": str(written), "content": "x = 1\n"}),
+               tool_result("t1", "File created successfully"),
+               assistant_text("I created `src/app.py`.")]
+    for record in records:
+        if "cwd" in record:
+            record["cwd"] = str(tmp_path / "proj")
+    return write_jsonl(tmp_path / "w.jsonl", records)
+
+
+def test_sec223_a_nested_write_does_not_make_the_claimed_path_exist(tmp_path):
+    nested = tmp_path / "proj" / "vendor" / "src" / "app.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("x = 1\n")
+    result = cli.run_audit(str(_suffix_session(tmp_path, nested)), check_disk=True, agent="claude-code")
+    (finding,) = result.findings
+    assert finding.verdict is Verdict.CONTRADICTED and "not on disk" in finding.evidence
+
+
+def test_sec223_the_claimed_path_itself_still_verifies(tmp_path):
+    real = tmp_path / "proj" / "src" / "app.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("x = 1\n")
+    result = cli.run_audit(str(_suffix_session(tmp_path, real)), check_disk=True, agent="claude-code")
+    assert [f.verdict for f in result.findings] == [Verdict.VERIFIED]
+
+
 def test_sec238_backslashes_outside_code_spans_still_read_the_same():
     from donediff.report import _md
     assert _md("C:\\work\\a.py and `C:\\x`") == "C:&#92;work&#92;a.py and `C:\\x`"

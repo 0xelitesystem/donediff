@@ -603,11 +603,13 @@ def _verify_file_created(timeline: Timeline, claim: Claim, ctx: _Context,
     last = writes[-1]
     if check_disk and session.cwd:
         candidates, skipped = _local_candidates(session, claim, writes)
-        on_disk = any(p.exists() for p in candidates)
-        # A claimed path with a folder that lies inside the project was checked
-        # and is absent: a write elsewhere does not make it exist (SEC-223).
-        claimed_checked = _has_folder(claim.detail) and _confine(
-            claim.detail, session.cwd, session.cwd, set()) is not None
+        # A claimed path with a folder that lies inside the project is checked
+        # itself: a write elsewhere (vendor/src/app.py for src/app.py) does not
+        # make it exist (SEC-223).
+        claimed = _confine(claim.detail, session.cwd, session.cwd, set()) \
+            if _has_folder(claim.detail) else None
+        claimed_checked = claimed is not None
+        on_disk = claimed.exists() if claimed_checked else any(p.exists() for p in candidates)
         if not on_disk and skipped and not claimed_checked:
             return _found(claim, ctx, Verdict.VERIFIED,
                           f"{last.tool_name} call for `{name}` found; {_not_checked(skipped)}", last)
