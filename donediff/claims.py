@@ -20,9 +20,12 @@ _DISQUALIFIERS = re.compile(
     r"\b(?:will|would|should|could|may|might|once|if|unless|until|when|"
     r"whenever|after|let'?s|going to|need(?:s)? to|have to|to make|"
     r"don'?t|doesn'?t|didn'?t|aren'?t|isn'?t|wasn'?t|not|no longer|"
-    r"fail(?:s|ed|ing)?|broken|can'?t|cannot|try|attempt|neither|nor|whether)\b",
+    r"fail(?:s|ed|ing)?|broken|can'?t|cannot|try|attempt)\b",
     re.IGNORECASE,
 )
+# A file-created phrasing beside these names no file made ("Neither a.py nor
+# b.py was created"); the sentence's other claims are still read (G-2).
+_FILE_ONLY_DISQUALIFIERS = re.compile(r"\b(?:neither|nor|whether)\b", re.IGNORECASE)
 
 # A path named in a claim: in backticks, or bare with a file extension.
 _PATH = (r"(?:`([^`\s]+)`"
@@ -337,6 +340,8 @@ def _sentence_claims(sentence: str, index: int,
                      written: frozenset = frozenset()) -> list[Claim]:
     found: list[tuple[ClaimType, str, str]] = []
     for claim_type, pattern in _PATTERNS:
+        if claim_type is ClaimType.FILE_CREATED and _FILE_ONLY_DISQUALIFIERS.search(sentence):
+            continue
         match = pattern.search(sentence)
         if not match:
             continue
