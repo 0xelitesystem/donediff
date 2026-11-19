@@ -104,6 +104,8 @@ donediff now reads more coding agents than Claude Code.
   phrasings ("hello.py was created", "`hello.py` was executed", "`python
   hello.py` ran without errors") are read as file-created and command
   claims; a web domain (example.com) is not a file.
+- A successful MultiEdit call backs a claim that its file was edited or
+  created, as an Edit call does.
 - SEC-203: a relative database path from an environment variable, joined
   onto a network `$XDG_DATA_HOME`, is refused; the final path is checked,
   not only its parts.
@@ -279,9 +281,9 @@ donediff now reads more coding agents than Claude Code.
 - SEC-296: a keycap emoji or a Turkish word with a dotless i no longer
   raises the hidden-characters signal; a dotless i that changes the claims
   read still does.
-- SEC-297: a library name such as Node.js, a question, or a sentence with
-  "neither", "nor" or "whether" is no longer read as a claim that a file
-  was created.
+- SEC-297: a library name such as Node.js (unless the session wrote or
+  edited a file of that name), a question, or a sentence with "neither",
+  "nor" or "whether" is no longer read as a claim that a file was created.
 
 ### Security
 
