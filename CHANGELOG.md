@@ -283,7 +283,8 @@ donediff now reads more coding agents than Claude Code.
 - SEC-291: a claim that a command worked, made after a trap that exits 0
   (`trap 'exit 0' EXIT`), is UNVERIFIED instead of VERIFIED. A trap is
   read wherever it stands in command position, however the word is
-  written (`\trap`, `'trap'`, `x=1 trap`, inside `case`), and a handler
+  written (`\trap`, `'trap'`, `x=1 trap`, inside `case`, after `if`,
+  `while`, `until` or `coproc`), and a handler
   counts as keeping the status only when it provably does; any other
   handler leaves the claim UNVERIFIED.
 - SEC-292: a status read counts as keeping the check's exit code only in a
@@ -296,7 +297,8 @@ donediff now reads more coding agents than Claude Code.
   pipeline stage's status: `${PIPESTATUS[N]}` where stage N is not the check
   (`pytest | head -1; exit ${PIPESTATUS[1]}`), `$?` when a filter follows
   the check and `pipefail` is off, and `$LASTEXITCODE` after a native filter
-  such as `findstr`.
+  such as `findstr`. A comment after a plain form (`exit $?  # done`) still
+  keeps the status (SEC-312).
 - SEC-293: the Codex CLI reader, and the readers for other formats, keep
   only the tool input donediff reads for a tool they do not model, so a
   large input to such a tool no longer fills memory. The Gemini CLI and
@@ -304,7 +306,10 @@ donediff now reads more coding agents than Claude Code.
   they hold and do not read a session file over 512 MiB, and the Goose,
   OpenCode and Cline readers keep only the fields donediff reads from a
   tool they do not model, so padding in such a file no longer fills
-  memory.
+  memory. The Gemini CLI and Qwen Code readers also no longer keep empty
+  text parts or empty tool results one by one (SEC-308), and skip a tool
+  call with no name as an unrecognised record instead of reading it as a
+  tool call (SEC-309).
 - SEC-294: the 200,000 edit-pair limit holds per session, across the main
   transcript, its sub-agent transcripts and the Codex, OpenCode and Cline
   readers, and a tool donediff does not model keeps no edit list, so tiny
