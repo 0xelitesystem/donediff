@@ -665,14 +665,26 @@ _TRAP_BEFORE = frozenset({"err", "sigerr", "debug", "sigdebug", "return", "sigre
 # Signal names a trap can be given; a command named by a variable with one of
 # them as an argument (`$t 'exit 0' EXIT`) may be a trap.
 _TRAP_SIGNAL_WORD = re.compile(r"(?:SIG)?(?:EXIT|ERR|DEBUG|RETURN)|0", re.IGNORECASE)
+# PowerShell code built at run time and run in this session, which may define a
+# function named like the check or anything else (QA-032, rule (b) of SEC-251):
+# Invoke-Expression or iex (a literal too, since `iex 'function global:python
+# {...}'` replaces the program), [scriptblock]::Create, and the engine's
+# InvokeScript / NewScriptBlock. Matched outside quotes only.
+_PS_GENERATED = re.compile(
+    r"(?<![\w$-])(?:invoke-expression|iex)(?![\w-])"
+    r"|\[\s*scriptblock\s*\]\s*::\s*create\b"
+    r"|\.\s*(?:invokescript|newscriptblock)\s*\(",
+    re.IGNORECASE)
 
 
 def _runs_generated_text(text: str) -> bool:
     """True when `text` runs shell text the engine cannot read in this shell,
     which may set a trap or anything else (fail closed, SEC-251 ruling (b)):
     source or `.` of `<(..)`, `$(..)`, a backtick, /dev/stdin and the like or a
-    redirect, eval of anything not literal, or a command named by a variable
-    given a trap signal name."""
+    redirect, eval of anything not literal, a command named by a variable
+    given a trap signal name, or PowerShell code built at run time (QA-032)."""
+    if _PS_GENERATED.search(_QUOTED_TEXT.sub(" ", text)):
+        return True
     for word, _, rest in _commands(text):
         low = word.lower()
         if low in ("source", ".") and re.search(r"<|\$\(|`|/dev/|/proc/", rest):
