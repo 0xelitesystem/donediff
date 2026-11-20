@@ -592,8 +592,8 @@ def _exits_zero(text: str) -> bool:
 # which covers its whole scope.
 _SHELL_WORD = re.compile(r"""(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|\\.|[^\s"'\\])+""")
 # Words after which the next word is still in command position.
-_CMD_PREFIX = frozenset({"then", "do", "else", "elif", "time", "builtin", "command", "exec",
-                         "nohup", "env", "sudo", "nice", "!", "{", "(", ""})
+_CMD_PREFIX = frozenset({"then", "do", "else", "elif", "if", "while", "until", "coproc",
+                         "time", "builtin", "command", "exec", "nohup", "env", "sudo", "nice", "!", "{", "(", ""})
 _ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=")
 _FUNC_DEF = re.compile(r"(?:^|[\s;{])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)")
 
