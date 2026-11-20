@@ -271,7 +271,8 @@ _ERREXIT_ON = re.compile(r"^set\s+(?:-[A-Za-z]+\s+)*-[A-Za-df-z]*e")
 # its own right after the check, `exit $rc` after `rc=$?`. Printing it
 # (`echo "exit $?"`) keeps nothing: the call's status is then echo's.
 _STATUS_EXIT = re.compile(
-    r"\s*exit\s+(\"?)\$(?:\?|\{\?\}|\{PIPESTATUS\[\d+\]\}|LASTEXITCODE|\{LASTEXITCODE\})\1[\s;)}]*",
+    r"\s*exit\s+(\"?)\$(?:\?|\{\?\}|\{PIPESTATUS\[\d+\]\}|LASTEXITCODE|\{LASTEXITCODE\})\1[\s;)}]*"
+    r"(?:(?<=\s)#[^\n]*)?",  # a trailing comment changes nothing (SEC-312)
     re.IGNORECASE)
 # A test of the status (`[ $? -ne 0 ]`, `if ($LASTEXITCODE -ne 0)`,
 # `if (-not $?)`): it keeps the status only when a failing exit follows.

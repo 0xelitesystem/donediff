@@ -47,3 +47,19 @@ def test_r4_a_trap_after_a_compound_keyword_is_seen(tmp_path, trap):
 def test_r4_a_plain_checks_still_verify(tmp_path, command):
     assert not zero_exit_trap(command)
     assert _verdict(tmp_path, command, "5 passed").verdict is Verdict.VERIFIED
+
+
+# -- SEC-312 (NEW3-V-2): a comment after the status exit keeps the status ----------
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q; exit $?  # done",
+    "python -m pytest -q; exit $?   #",
+    "python -m pytest -q | tee log; exit ${PIPESTATUS[0]} # keep the check's status",
+])
+def test_sec312_status_exit_with_a_trailing_comment_verifies(tmp_path, command):
+    assert _verdict(tmp_path, command, "5 passed").verdict is Verdict.VERIFIED
+
+
+def test_sec312_a_hash_glued_to_the_status_is_not_a_comment(tmp_path):
+    command = "python -m pytest -q; exit $?#x"  # one word: bash exits 2 or 1#x, not the check's status
+    assert _verdict(tmp_path, command, "5 passed").verdict is Verdict.UNVERIFIED
