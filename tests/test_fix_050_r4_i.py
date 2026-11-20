@@ -149,3 +149,42 @@ def test_sec308_qwen_text_runs_read_as_before(tmp_path):
     calls = session.tool_calls()
     assert len(calls) == 1 and calls[0].result_seen and calls[0].output == "ok"
     assert session.prompt_starts == [0]
+
+
+# -- SEC-309 (NEW3-I-2) -------------------------------------------------------------
+
+def test_sec309_gemini_nameless_calls_are_not_events(tmp_path):
+    session = _flat(GEMINI, _gemini_session, tmp_path, "calls")
+    assert len(session.events) == 8
+    assert session.unrecognised == 8 * PADN
+
+
+def test_sec309_qwen_nameless_calls_are_not_events(tmp_path):
+    session = _flat(QWEN, _qwen_session, tmp_path, "fcempty")
+    assert len(session.events) == 8
+    assert session.unrecognised == 8 * PADN
+
+
+def test_sec309_named_calls_still_read(tmp_path):
+    clock = mk_gemini.Clock()
+    call = mk_gemini.call(clock, "c1", "google_web_search", {"query": "x"}, "success",
+                          mk_gemini.output("c1", "google_web_search", "ok"))
+    records = [mk_gemini.meta(), mk_gemini.user(clock, "u1", "Do it."),
+               mk_gemini.gemini(clock, "g1", "", [{"name": ""}, call, {"name": 5}, "x"])]
+    path = mk_gemini.write(tmp_path / "session-2026-06-10T12-00-0000aa02.jsonl", records)
+    session = GEMINI.parse(path)
+    assert [c.tool_name for c in session.tool_calls()] == ["google_web_search"]
+    assert session.unrecognised == 3
+
+    chat = mk_qwen.Chat()
+    chat.user("Do it.")
+    record = chat.assistant(text="a", calls=[mk_qwen.call("c1", "web_search", {"query": "x"})])
+    record["message"]["parts"] += [{"functionCall": {"name": ""}, "text": "hidden"},
+                                   {"functionCall": {"args": {}}}]
+    chat.result("c1", "web_search", output="ok")
+    path = mk_qwen.write(tmp_path / f"{mk_qwen.SID}.jsonl", chat.records)
+    session = QWEN.parse(path)
+    assert [c.tool_name for c in session.tool_calls()] == ["web_search"]
+    assert session.tool_calls()[0].output == "ok"
+    assert [e.text for e in session.events if e.text] == ["a"]
+    assert session.unrecognised == 2

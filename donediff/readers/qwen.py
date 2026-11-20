@@ -241,14 +241,20 @@ def _lean_response(response: dict) -> dict:
     return lean
 
 
+_NAMELESS = object()  # _lean_part's mark for a functionCall with no name
+
+
 def _lean_part(part):
     """A part with only what _Build and _results read; None when it keeps nothing.
     _Build reads a part's functionCall before its text, so a call part keeps only its call."""
     if not isinstance(part, dict):
         return None
     lean = {}
-    if isinstance(part.get("functionCall"), dict):
-        lean["functionCall"] = _lean_call(part["functionCall"])
+    call = part.get("functionCall")
+    if isinstance(call, dict):
+        if not (isinstance(call.get("name"), str) and call["name"]):
+            return _NAMELESS  # no tool call any agent made: counted, never an Event (SEC-309)
+        lean["functionCall"] = _lean_call(call)
     response = part.get("functionResponse")
     if isinstance(response, dict) and isinstance(response.get("id"), str):
         lean["functionResponse"] = _lean_response(response)  # _results reads str ids only
@@ -257,12 +263,16 @@ def _lean_part(part):
     return lean or None
 
 
-def _lean_parts(parts: list) -> list:
+def _lean_parts(parts: list, nameless: list[int]) -> list:
     """Lean parts, each run of plain text parts merged into one: every reader
     joins text parts with a newline, so one string holds the same text without
-    a dict per part (SEC-308). A run is joined once, never by repeated +=."""
+    a dict per part (SEC-308). A run is joined once, never by repeated +=.
+    nameless[0] counts the nameless calls dropped (SEC-309)."""
     kept: list = []
     for part in map(_lean_part, parts):
+        if part is _NAMELESS:
+            nameless[0] += 1
+            continue
         if part is None:
             continue
         if list(part) == ["text"]:
@@ -275,7 +285,7 @@ def _lean_parts(parts: list) -> list:
     return [{"text": "\n".join(p)} if isinstance(p, list) else p for p in kept]
 
 
-def _lean(record: dict) -> dict:
+def _lean(record: dict, nameless: list[int]) -> dict:
     """A record with only the keys, parts and result fields _Build reads, as
     text, so padding anywhere in any record type (a list where text belongs, a
     response's other fields, toolCallResult, an extra key) is not held while
@@ -288,7 +298,7 @@ def _lean(record: dict) -> dict:
         lean["subtype"] = record["subtype"] if isinstance(record["subtype"], str) else ""
     parts = _parts(record)
     if parts:
-        lean["message"] = {"parts": _lean_parts(parts)}
+        lean["message"] = {"parts": _lean_parts(parts, nameless)}
     info = record.get("toolCallResult")
     if isinstance(info, dict):
         kept = {"status": info["status"]} if isinstance(info.get("status"), str) else {}
@@ -506,6 +516,7 @@ def parse_session(path: str | Path) -> Session:
         raise UnreadableSession("a network path is never read")
     session = Session(path=str(path))
     records: list[dict] = []
+    nameless = [0]
     if path.stat().st_size > MAX_FILE:  # as parse_transcript does (NEW2-I-1)
         raise UnreadableSession(f"session file is larger than donediff reads "
                                 f"({MAX_FILE // (1024 * 1024)} MiB): {path.name}")
@@ -524,9 +535,10 @@ def parse_session(path: str | Path) -> Session:
                 continue
             if (isinstance(record, dict) and isinstance(record.get("uuid"), str)
                     and record.get("type") in _TYPES):
-                records.append(_lean(record))
+                records.append(_lean(record, nameless))
             else:
                 session.unrecognised += 1
+    session.unrecognised += nameless[0]  # nameless calls (SEC-309)
     chain = _chain(records)
     for record in chain:
         if isinstance(record.get("sessionId"), str):

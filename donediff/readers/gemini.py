@@ -348,7 +348,12 @@ def _lean_message(record: dict) -> dict:
         lean["content"] = lean_parts(record["content"])
     calls = record.get("toolCalls")
     if isinstance(calls, list):
-        lean["toolCalls"] = [_lean_call(c) for c in calls]
+        # a call with no name is no tool call any agent made: counted, never an
+        # Event (SEC-309: 128x the file size held as unnamed OTHER events)
+        lean["toolCalls"] = [_lean_call(c) for c in calls
+                             if isinstance(c, dict) and isinstance(c.get("name"), str) and c["name"]]
+        if len(lean["toolCalls"]) < len(calls):
+            lean["nameless"] = len(calls) - len(lean["toolCalls"])
     return lean
 
 
@@ -484,6 +489,7 @@ class _Build:
                     kind=EventKind.TEXT, index=self.index, timestamp=self.timestamp,
                     text=text, t=self.clock))
                 self.index += 1
+            self.session.unrecognised += msg.get("nameless", 0)  # SEC-309
             calls = msg.get("toolCalls")
             for call in calls if isinstance(calls, list) else []:
                 if isinstance(call, dict):
