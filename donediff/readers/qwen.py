@@ -249,13 +249,30 @@ def _lean_part(part):
     lean = {}
     if isinstance(part.get("functionCall"), dict):
         lean["functionCall"] = _lean_call(part["functionCall"])
-    if isinstance(part.get("functionResponse"), dict):
-        lean["functionResponse"] = _lean_response(part["functionResponse"])
-    if isinstance(part.get("text"), str):
-        lean["text"] = part["text"]
-        if part.get("thought") is True:
-            lean["thought"] = True
+    response = part.get("functionResponse")
+    if isinstance(response, dict) and isinstance(response.get("id"), str):
+        lean["functionResponse"] = _lean_response(response)  # _results reads str ids only
+    if isinstance(part.get("text"), str) and part.get("thought") is not True:
+        lean["text"] = part["text"]  # thought text is never read (SEC-308)
     return lean or None
+
+
+def _lean_parts(parts: list) -> list:
+    """Lean parts, each run of plain text parts merged into one: every reader
+    joins text parts with a newline, so one string holds the same text without
+    a dict per part (SEC-308). A run is joined once, never by repeated +=."""
+    kept: list = []
+    for part in map(_lean_part, parts):
+        if part is None:
+            continue
+        if list(part) == ["text"]:
+            if kept and isinstance(kept[-1], list):
+                kept[-1].append(part["text"])
+            else:
+                kept.append([part["text"]])
+        else:
+            kept.append(part)
+    return [{"text": "\n".join(p)} if isinstance(p, list) else p for p in kept]
 
 
 def _lean(record: dict) -> dict:
@@ -271,7 +288,7 @@ def _lean(record: dict) -> dict:
         lean["subtype"] = record["subtype"] if isinstance(record["subtype"], str) else ""
     parts = _parts(record)
     if parts:
-        lean["message"] = {"parts": [p for p in map(_lean_part, parts) if p is not None]}
+        lean["message"] = {"parts": _lean_parts(parts)}
     info = record.get("toolCallResult")
     if isinstance(info, dict):
         kept = {"status": info["status"]} if isinstance(info.get("status"), str) else {}

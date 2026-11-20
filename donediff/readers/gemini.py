@@ -301,38 +301,19 @@ _SCALAR = (str, int, float, bool, type(None))
 # (NEW2-I-1, the SEC-293 / QA-029 class: 18x the file size before).
 
 
-def lean_parts(content):
-    """A PartListUnion with only the text parts_text reads; a str stays a str."""
-    if isinstance(content, str):
-        return content
-    kept = []
-    for item in content if isinstance(content, list) else [content]:
-        if isinstance(item, str):
-            kept.append(item)
-        elif isinstance(item, dict) and isinstance(item.get("text"), str):
-            kept.append({"text": item["text"], "thought": True} if item.get("thought") is True
-                        else {"text": item["text"]})
-    return kept
+def lean_parts(content) -> str:
+    """The text parts_text reads, as one str (parts_text of a str is that str).
+    No item is held one by one, so empty parts cost nothing (SEC-308)."""
+    return parts_text(content)
 
 
 def lean_result(result) -> list:
-    """Result Parts with only the text result_text reads (output, error, text)."""
-    kept = []
-    for item in result if isinstance(result, list) else [result]:
-        if isinstance(item, str):
-            kept.append(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        response = item.get("functionResponse")
-        if isinstance(response, dict):
-            body = response.get("response")
-            body = body if isinstance(body, dict) else {}
-            kept.append({"functionResponse": {"response": {
-                key: body[key] for key in ("output", "error") if isinstance(body.get(key), str)}}})
-        elif isinstance(item.get("text"), str):
-            kept.append({"text": item["text"]})
-    return kept
+    """The text and error flag result_text reads, in the smallest Parts that
+    give them back: the joined text, then one empty error when there was one
+    (SEC-308: an empty functionResponse used to be held as three dicts)."""
+    text, has_error = result_text(result)
+    return ([text] if text else []) + (
+        [{"functionResponse": {"response": {"error": ""}}}] if has_error else [])
 
 
 def _lean_call(call):
