@@ -381,6 +381,29 @@ def _fails_again(statements) -> bool:
     return False
 
 
+_STATUS_INDEX = re.compile(r"PIPESTATUS\[(\d+)\]", re.IGNORECASE)
+_STATUS_LAST = re.compile(r"\$(?:\?|\{\?\})")
+_STATUS_NATIVE = re.compile(r"\$\{?LASTEXITCODE\b", re.IGNORECASE)
+# PowerShell cmdlets (Verb-Noun) and their common aliases: they leave
+# $LASTEXITCODE alone, so after `npm test | Select-Object` it is still npm's.
+_PS_CMDLET = re.compile(r"[a-z]+-[a-z]+|select|where|sort|measure|foreach|%|\?|ft|fl")
+
+
+def _reads_own_stage(text: str, stages: list[str], own: set[int], pipefail: bool) -> bool:
+    """True when every status read in `text` names the check's own pipeline
+    stage (fail closed, QA-033): `${PIPESTATUS[N]}` only when stage N is the
+    check; `$?` only when the check is the last stage or pipefail is on;
+    `$LASTEXITCODE` only when every stage after the check is a PowerShell
+    cmdlet (a native filter such as findstr sets it)."""
+    if any(int(n) not in own for n in _STATUS_INDEX.findall(text)):
+        return False
+    last = len(stages) - 1
+    if _STATUS_LAST.search(text) and not (pipefail or last in own):
+        return False
+    return not (_STATUS_NATIVE.search(text) and not all(
+        _PS_CMDLET.fullmatch(program(s) or "") for s in stages[max(own) + 1:]))
+
+
 def _status_kept(after: list[str], ops: list[str] | None = None, op0: str = ";") -> bool:
     """True when the statements right after a check exit with its status, in a
     canonical form only (fail closed, SEC-292); `$?` read anywhere else is
@@ -813,6 +836,9 @@ def masking(command: str, _depth: int = 0) -> list[tuple[str, str, str]]:
         pipefail = any(_PIPEFAIL_ON.match(n) for n in before)
         errexit = any(_ERREXIT_ON.match(n) for n in before)
         read_after = _status_kept(after, [st.op for st in statements[pos + 1:]], statement.op)
+        own = {i for i, s in enumerate(stages) if _has_check([s])}
+        if read_after and own and not _reads_own_stage(after[0], stages, own, pipefail):
+            read_after = False  # the read names another stage's status (QA-033)
         prev_op = statements[pos - 1].op if pos else ""
         if prev_op == "||" and _has_check(chain):
             # Everything from here to the end of the &&/|| chain runs only

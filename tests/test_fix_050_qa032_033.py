@@ -80,3 +80,48 @@ def test_qa032_a_command_claim_after_powershell_run_time_code_is_unverified(tmp_
 def test_qa032_quoted_words_and_plain_powershell_are_no_mask(tmp_path, form):
     assert _kinds(form + "; " + _QUIET) == []
     assert zero_exit_trap(form + "; " + _HELLO) is None
+
+
+# -- QA-033: a status read keeps the check's status only when it names the -----
+# -- check's own stage ----------------------------------------------------------
+
+_QA033_FORMS = [
+    "pytest | head -1; exit ${PIPESTATUS[1]}",
+    "pytest | head -1 | cat; exit ${PIPESTATUS[2]}",
+    "pytest | head -1 | cat; exit ${PIPESTATUS[1]}",
+    "pytest | head -1; rc=${PIPESTATUS[1]}; exit $rc",
+    "pytest | head -1; [ ${PIPESTATUS[1]} -ne 0 ] && exit 1",
+    "pytest | head -1; if [ ${PIPESTATUS[1]} -ne 0 ]; then exit 1; fi",
+    "pytest | head -1; exit $?",
+    "pytest | head -1; exit ${?}",
+    "pytest | head -1; rc=$?; exit $rc",
+    "pytest | head -1; [ $? -ne 0 ] && exit 1",
+    "pytest | findstr passed; exit $LASTEXITCODE",
+    "pytest | Select-Object -Last 5 | findstr passed; if ($LASTEXITCODE -ne 0) { exit 1 }",
+]
+
+
+@pytest.mark.parametrize("command", _QA033_FORMS)
+def test_qa033_a_status_read_of_another_stage_is_a_mask(tmp_path, command):
+    assert "masked_exit_code" in _kinds(command)
+    finding, signals = _verdict(tmp_path, command, "1 failed, 4 passed")
+    assert finding.verdict is not Verdict.VERIFIED
+    assert "masked_exit_code" in signals
+
+
+@pytest.mark.parametrize("command", [
+    "pytest | head -1; exit ${PIPESTATUS[0]}",
+    "pytest | head -1 | cat; exit ${PIPESTATUS[0]}",
+    "pytest | head -1; rc=${PIPESTATUS[0]}; exit $rc",
+    "pytest | head -1; [ ${PIPESTATUS[0]} -ne 0 ] && exit 1",
+    "cat cfg | pytest; exit ${PIPESTATUS[1]}",
+    "cat cfg | pytest; exit $?",
+    "set -o pipefail; pytest | head -1; exit $?",
+    "pytest; exit ${PIPESTATUS[0]}",
+    "pytest; exit $?",
+    "npm test | Select-Object -Last 5; if ($LASTEXITCODE -ne 0) { exit 1 }",
+    "npm test | Where-Object { $_ } | Select-Object -Last 5; exit $LASTEXITCODE",
+    "npm test; exit $LASTEXITCODE",
+])
+def test_qa033_a_status_read_of_the_checks_own_stage_is_kept(command):
+    assert "masked_exit_code" not in _kinds(command)
