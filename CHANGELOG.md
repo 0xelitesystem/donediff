@@ -239,6 +239,8 @@ donediff now reads more coding agents than Claude Code.
   `command`. Shell text donediff cannot read that runs in the same shell
   (`source <(...)`, `eval "$(...)"`, `source /dev/stdin`) counts as a trap
   that may exit 0, and a trap on any signal counts, not only one on EXIT.
+  PowerShell code built at run time in the same call (`Invoke-Expression`,
+  `iex`, `[scriptblock]::Create`) counts the same way.
 - SEC-252: an exit code written in a command (`exit N`, `return N`) is read
   as bash reads it: up to 19 digits, a code that is 0 mod 256 inside the
   64-bit range exits 0 (`exit 1152921504606846976`), and a number outside
@@ -290,7 +292,11 @@ donediff now reads more coding agents than Claude Code.
   exit 1; fi`, `[ $? -eq 0 ] || exit 1`); any other form, such as a status
   test that exits 0 when the check failed (`[ $? -ne 0 ] && exit`,
   `rc=$?; rc=0; exit $rc`), an exit behind `||`, or `$?` read after
-  another command, leaves the claim UNVERIFIED.
+  another command, leaves the claim UNVERIFIED. So does a read of another
+  pipeline stage's status: `${PIPESTATUS[N]}` where stage N is not the check
+  (`pytest | head -1; exit ${PIPESTATUS[1]}`), `$?` when a filter follows
+  the check and `pipefail` is off, and `$LASTEXITCODE` after a native filter
+  such as `findstr`.
 - SEC-293: the Codex CLI reader, and the readers for other formats, keep
   only the tool input donediff reads for a tool they do not model, so a
   large input to such a tool no longer fills memory. The Gemini CLI and
